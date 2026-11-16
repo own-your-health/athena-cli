@@ -679,6 +679,46 @@ fn a_search_page_that_fails_keeps_the_pages_before_it() {
 }
 
 #[test]
+fn an_id_past_64_is_read_and_one_past_256_is_skipped() {
+    let m = Mock::start(0);
+    let http = BlockingTransport::new().unwrap();
+    let tokens = sign_in(&m, &http);
+    let store = Arc::new(MemoryStore::default());
+    let c = client(&http, &store, &tokens);
+    m.set_mode("long-ids");
+    let (text, result) = pull(&c, &tokens);
+    result.expect("an id the client refuses is a skip, not the end");
+    let out = lines(&text);
+    let practitioner = out
+        .iter()
+        .find(|l| l["resourceType"] == "Practitioner")
+        .expect("the Practitioner was read");
+    assert_eq!(practitioner["id"].as_str().unwrap().len(), 100);
+    let trailer = out.last().unwrap();
+    assert_eq!(trailer["complete"], true);
+    let location: Vec<&Value> = trailer["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["resource_type"] == "Location")
+        .collect();
+    assert_eq!(location.len(), 1, "{trailer}");
+    assert_eq!(location[0]["code"], "verify_failed");
+    assert_eq!(location[0]["id"].as_str().unwrap().len(), 300);
+    assert!(
+        location[0]["reason"].as_str().unwrap().contains("1 to 256"),
+        "{}",
+        location[0]
+    );
+    assert!(
+        !m.requests()
+            .iter()
+            .any(|(_, path)| path.starts_with("/fhir/r4/Location/")),
+        "nothing was sent for the refused id"
+    );
+}
+
+#[test]
 fn an_export_to_a_directory_commits_complete_streams_and_keeps_the_last_one() {
     use pk_med_records::stream::{Item, RecordsReader, StreamError};
     let m = Mock::start(0);

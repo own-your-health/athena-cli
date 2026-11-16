@@ -1,13 +1,12 @@
 [package]
 name = "athena-cli"
 description = "Unofficial CLI that downloads a patient's or caregiver's own records from athenahealth practices through athenahealth's patient-access FHIR API."
-version = "0.3.0"
+version = "0.3.1"
 edition = "2021"
 # pk-cli-auth's refresh lock uses File::try_lock (1.89).
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/piekstra/athena-cli"
-homepage = "https://github.com/piekstra/athena-cli"
 authors = ["piekstra"]
 publish = false
 
@@ -29,9 +28,9 @@ pk-cli-http = { git = "https://github.com/piekstra/cli-common", tag = "v0.31.1" 
 pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.31.1" }
 # medical-common: the SMART sign-in, the FHIR client, and the
 # health-records/v1 stream and DTOs. Same cli-common tag.
-pk-med-smart = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.2" }
-pk-med-fhir = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.2" }
-pk-med-records = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.2" }
+pk-med-smart = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.3" }
+pk-med-fhir = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.3" }
+pk-med-records = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.3" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
@@ -42,11 +41,12 @@ serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "rustls-tls"] }
 # The base64 of Binary resources.
 base64 = "0.22"
+# A document id too long for a file name is shortened to a prefix and its
+# hash; the mock's PKCE check (S256) uses it too.
+sha2 = "0.11"
 
 [dev-dependencies]
 assert_cmd = "2"
-# The mock's PKCE check (S256).
-sha2 = "0.11"
 predicates = "3"
 tempfile = "3"
 

@@ -15,7 +15,9 @@
 //! `revoked` (every refresh is `invalid_grant`), `deny` (the sign-in is
 //! cancelled), `nonce` (the ID token carries another sign-in's nonce),
 //! `down` (FHIR answers 503), `page2-down` (Observation's second page answers
-//! 503), `forbidden` (FHIR answers 403).
+//! 503), `long-ids` (an Encounter refers to a Practitioner by a 100-character
+//! id, which reads, and a Location by a 300-character one), `forbidden` (FHIR
+//! answers 403).
 
 #![allow(dead_code)]
 
@@ -51,6 +53,8 @@ fn fixture(path: &str) -> Option<&'static str> {
         "Condition" => fixture!("search-Condition.json"),
         "Condition-malformed" => fixture!("search-Condition-malformed.json"),
         "Encounter" => fixture!("search-Encounter.json"),
+        "Encounter-long-ids" => fixture!("search-Encounter-long-ids.json"),
+        "Practitioner-long-id" => fixture!("practitioner-long-id.json"),
         "Observation" => fixture!("search-Observation.json"),
         "Observation-page2" => fixture!("search-Observation-page2.json"),
         "Immunization" => fixture!("search-Immunization.json"),
@@ -393,6 +397,7 @@ impl Mock {
         }
         let malformed = s.mode == "malformed";
         let page2_down = s.mode == "page2-down";
+        let long_ids = s.mode == "long-ids";
         drop(s);
         let serve = |text: &str| fhir_json(200, &text.replace("{{BASE}}", &base));
         if !id.is_empty() {
@@ -405,6 +410,13 @@ impl Mock {
             }
             if let Some(text) = fixture(path) {
                 return serve(text);
+            }
+            if long_ids && resource_type == "Practitioner" {
+                let text = fixture("Practitioner-long-id").unwrap();
+                let value: serde_json::Value = serde_json::from_str(text).unwrap();
+                if value["id"] == id {
+                    return serve(text);
+                }
             }
             // A read of a resource the searches return.
             if let Some(found) = fixture(resource_type).and_then(|b| find_in_bundle(b, id)) {
@@ -421,6 +433,7 @@ impl Mock {
             // An entry with no resourceType, then a good one.
             "Condition" if malformed => serve(fixture("Condition-malformed").unwrap()),
             "ServiceRequest" => fhir_json(400, fixture("outcome-unsupported").unwrap()),
+            "Encounter" if long_ids => serve(fixture("Encounter-long-ids").unwrap()),
             "Observation" if q.get("cursor").map(String::as_str) == Some("2") && page2_down => fhir_json(503, "Service Unavailable"),
             "Observation" if q.get("cursor").map(String::as_str) == Some("2") => serve(fixture("Observation-page2").unwrap()),
             t => match fixture(t) {
