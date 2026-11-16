@@ -1,0 +1,46 @@
+{
+  "resourceType": "Bundle",
+  "type": "searchset",
+  "total": 1,
+  "link": [
+    {
+      "relation": "self",
+      "url": "{{BASE}}/search"
+    }
+  ],
+  "entry": [
+    {
+      "fullUrl": "{{BASE}}/DocumentReference/doc-long-1",
+      "resource": {
+        "resourceType": "DocumentReference",
+        "id": "doc-long-1",
+        "status": "current",
+        "subject": {
+          "reference": "Patient/a-900001.E-1001"
+        },
+        "type": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "34117-2",
+              "display": "History and physical note"
+            }
+          ]
+        },
+        "date": "2026-02-03T10:00:00Z",
+        "description": "Synthetic note with a long file id",
+        "content": [
+          {
+            "attachment": {
+              "contentType": "application/pdf",
+              "url": "Binary/bin-long.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kq-Mn.Wz-Xy.Kqz"
+            }
+          }
+        ]
+      },
+      "search": {
+        "mode": "match"
+      }
+    }
+  ]
+}

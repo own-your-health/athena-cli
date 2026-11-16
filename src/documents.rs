@@ -12,7 +12,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use pk_cli_core::{CliError, RangeArgs, Reason};
 use pk_cli_documents::{fs_safe, Document, SKIP_NO_FILE, SKIP_UPSTREAM, SKIP_VERIFY_FAILED};
-use pk_med_fhir::MAX_ID_LEN;
+use pk_med_fhir::{is_id, MAX_ID_LEN};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -185,12 +185,7 @@ pub fn parse_id(id: &str) -> Result<(String, usize), CliError> {
     };
     let (resource_type, rid) = reference.split_once('/').ok_or_else(|| bad_id(id))?;
     let ok_type = matches!(resource_type, "DocumentReference" | "DiagnosticReport");
-    let ok_id = !rid.is_empty()
-        && rid.len() <= MAX_ID_LEN
-        && !rid.chars().all(|c| c == '.')
-        && rid
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
+    let ok_id = is_id(rid);
     if !(ok_type && ok_id) {
         return Err(bad_id(id));
     }
@@ -252,7 +247,7 @@ pub fn fetch(client: &Client, item: &Item) -> Result<Fetched, FetchError> {
     let (data, content_type) = match &item.source {
         Source::Inline(data) => (data.clone(), item.content_type.clone()),
         Source::Url(url) => {
-            if binary_id(url, client.base()).is_none() {
+            let Some(id) = binary_id(url, client.base()) else {
                 return Err(FetchError {
                     code: SKIP_NO_FILE,
                     error: CliError::NotFound(
@@ -261,12 +256,16 @@ pub fn fetch(client: &Client, item: &Item) -> Result<Fetched, FetchError> {
                             .into(),
                     ),
                 });
+            };
+            if !is_id(&id) {
+                return Err(FetchError {
+                    code: SKIP_VERIFY_FAILED,
+                    error: file_id_refused(),
+                });
             }
-            // A usage error is pk_med_fhir refusing the server's id.
             let binary = client.binary(url).map_err(|error| FetchError {
                 code: match (error.base(), error.reason()) {
                     (CliError::NotFound(_), _) | (_, Some(Reason::Forbidden)) => SKIP_NO_FILE,
-                    (CliError::Usage(_), _) => SKIP_VERIFY_FAILED,
                     _ => SKIP_UPSTREAM,
                 },
                 error,
@@ -422,6 +421,16 @@ fn file_id(id: &str) -> String {
     let hex: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
     let keep = FILE_ID_LEN - hex.len() - 1;
     format!("{}-{hex}", &safe[..keep])
+}
+
+/// Why a document's file is not fetched: its Binary id is outside
+/// `pk_med_fhir::is_id`. The skip names the document by its id.
+fn file_id_refused() -> CliError {
+    CliError::Upstream(format!(
+        "the server names this document's file by an id that is not a FHIR id (1 to \
+         {MAX_ID_LEN} of A-Z a-z 0-9 - ., not only dots), so athena cannot fetch it; the \
+         practice's patient portal may still show it"
+    ))
 }
 
 /// Whether `-o` names a directory to write into: one that exists, or a path

@@ -706,16 +706,47 @@ fn an_id_past_64_is_read_and_one_past_256_is_skipped() {
     assert_eq!(location[0]["code"], "verify_failed");
     assert_eq!(location[0]["id"].as_str().unwrap().len(), 300);
     assert!(
-        location[0]["reason"].as_str().unwrap().contains("1 to 256"),
+        location[0]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("not a FHIR id (1 to 256"),
         "{}",
         location[0]
     );
+    let binary: Vec<&Value> = trailer["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["resource_type"] == "Binary")
+        .collect();
+    assert_eq!(binary.len(), 1, "{trailer}");
+    assert_eq!(binary[0]["code"], "verify_failed");
+    assert_eq!(binary[0]["id"].as_str().unwrap().len(), 300);
+
+    let items = documents::list(&c, &RangeArgs::default()).unwrap();
+    let long = items
+        .iter()
+        .find(|i| i.document.id == "DocumentReference/doc-long-1")
+        .expect("the document is listed");
+    let refused = documents::fetch(&c, long).err().expect("not fetched");
+    assert_eq!(refused.code, "verify_failed");
     assert!(
-        !m.requests()
-            .iter()
-            .any(|(_, path)| path.starts_with("/fhir/r4/Location/")),
-        "nothing was sent for the refused id"
+        refused.error.to_string().contains("not a FHIR id")
+            && refused
+                .error
+                .to_string()
+                .contains("patient portal may still show it"),
+        "{}",
+        refused.error
     );
+    for prefix in ["/fhir/r4/Location/", "/fhir/r4/Binary/bin-long."] {
+        assert!(
+            !m.requests()
+                .iter()
+                .any(|(_, path)| path.starts_with(prefix)),
+            "nothing was sent for {prefix}"
+        );
+    }
 }
 
 #[test]

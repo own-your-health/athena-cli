@@ -22,6 +22,8 @@ use std::time::Duration;
 use pk_cli_auth::oauth::{ClientAuth, OAuthClient};
 use pk_cli_core::{block_on, CliError};
 use pk_cli_http::BlockingTransport;
+use pk_med_fhir::is_id;
+#[cfg(test)]
 use pk_med_fhir::MAX_ID_LEN;
 use pk_med_smart::{begin, discover, LaunchRequest, SmartApp, SmartSession, SmartSignIn};
 
@@ -227,14 +229,9 @@ fn answer(mut stream: TcpStream, port: u16, page: &str) {
 }
 
 /// A patient id is used in keychain accounts, file names and URLs, so it is
-/// held to FHIR's id characters, `[A-Za-z0-9\-\.]`, and to `pk_med_fhir`'s
-/// length (1 to [`MAX_ID_LEN`], past FHIR R4's 64, as the reads allow).
+/// held to the id rule the reads apply (`pk_med_fhir::is_id`).
 pub fn validate_patient_id(id: &str) -> Result<(), CliError> {
-    let ok = !id.is_empty()
-        && id.len() <= MAX_ID_LEN
-        && id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
+    let ok = is_id(id);
     if ok {
         Ok(())
     } else {
@@ -379,5 +376,6 @@ mod tests {
         assert!(validate_patient_id(&"a".repeat(MAX_ID_LEN + 1)).is_err());
         assert!(validate_patient_id("../x").is_err());
         assert!(validate_patient_id("").is_err());
+        assert!(validate_patient_id("...").is_err());
     }
 }
