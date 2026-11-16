@@ -13,6 +13,7 @@ use base64::Engine as _;
 use pk_cli_core::{CliError, RangeArgs, Reason};
 use pk_cli_documents::{fs_safe, Document, SKIP_NO_FILE, SKIP_UPSTREAM, SKIP_VERIFY_FAILED};
 use pk_med_fhir::{is_id, ReferenceTarget, MAX_ID_LEN};
+use pk_med_records::stream::skip::INVALID_REFERENCE;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -262,8 +263,10 @@ pub fn fetch(client: &Client, item: &Item) -> Result<Fetched, FetchError> {
                 });
             };
             if !is_id(&id) {
+                // documents/v1's codes are an open set; this is
+                // records-stream/v1's, so both streams name the case alike.
                 return Err(FetchError {
-                    code: SKIP_VERIFY_FAILED,
+                    code: INVALID_REFERENCE,
                     error: file_id_refused(),
                 });
             }

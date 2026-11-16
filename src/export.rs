@@ -312,7 +312,7 @@ fn skip_not_an_id<W: Write>(w: &mut Writer<W>, resource_type: &str, id: &str) {
         id: Some(id.into()),
         search: None,
         reason: not_an_id(resource_type).message().to_string(),
-        code: code::VERIFY_FAILED.into(),
+        code: code::INVALID_REFERENCE.into(),
     });
 }
 
@@ -418,23 +418,13 @@ pub fn collect_references(value: &Value, base: &str, out: &mut BTreeSet<String>)
 
 /// A reference to one of [`REFERENCED_TYPES`] on this FHIR server, as
 /// `Type/id`: relative, or absolute on `base` (`pk_med_fhir::ReferenceTarget`).
-/// One whose id `is_id` refuses is kept too, so the export reports it as a
-/// `verify_failed` skip rather than dropping it; that case carries no base, so
-/// an absolute one is kept only when it starts with `base`.
+/// One on this server whose id `is_id` refuses is kept too, so the export
+/// reports it as an `invalid_reference` skip rather than dropping it.
 fn local_reference(reference: &str, base: &str) -> Option<String> {
     let (resource_type, id) = match ReferenceTarget::read(reference) {
         Ok(Some(target)) if target.is_under(base) => (target.resource_type, target.id),
-        Ok(_) => return None,
-        Err(refused) => {
-            let absolute = reference.contains("://");
-            let on_base = reference
-                .strip_prefix(base.trim_end_matches('/'))
-                .is_some_and(|rest| rest.starts_with('/'));
-            if absolute && !on_base {
-                return None;
-            }
-            (refused.resource_type, refused.id)
-        }
+        Err(refused) if refused.is_under(base) => (refused.resource_type, refused.id),
+        _ => return None,
     };
     REFERENCED_TYPES
         .contains(&resource_type)
