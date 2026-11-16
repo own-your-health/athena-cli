@@ -390,10 +390,12 @@ v0.4.9). The export keeps the results that were sent and writes one
 serve. `documents list --json` and `documents download --all --json` add a
 `withheld` array of the same `{resource_type, code, reason}` when there is
 any, since a `documents/v1` skip names a document and these name none; both
-also print a warning to stderr per line. `withheld` is athena's own: it is
-not part of cli-common's `documents/v1` profile (`pk-cli-documents`) yet, and
-other CLIs do not emit it. athena moves to the profile's field once it has
-one. **Unverified**: whether athenahealth
+also print a warning to stderr per line. `withheld` is medical-common's
+extension of `documents/v1` for provider CLIs (DESIGN §1.7), not a field of
+cli-common's `documents/v1` profile (`pk-cli-documents`); a `documents/v1`
+reader that does not know it ignores it. When `documents/v1` gains a shared
+field for what a source left out, athena writes that field beside
+`withheld` for the rest of `/v1`. **Unverified**: whether athenahealth
 sends such an outcome; the mock's `withheld` mode serves Epic's shape.
 
 ## The sandbox
