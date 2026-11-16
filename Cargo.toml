@@ -1,7 +1,7 @@
 [package]
 name = "athena-cli"
 description = "Unofficial CLI that downloads a patient's or caregiver's own records from athenahealth practices through athenahealth's patient-access FHIR API."
-version = "0.3.5"
+version = "0.3.6"
 edition = "2021"
 # pk-cli-auth's refresh lock uses File::try_lock (1.89).
 rust-version = "1.89"
@@ -28,9 +28,9 @@ pk-cli-http = { git = "https://github.com/piekstra/cli-common", tag = "v0.31.1" 
 pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.31.1" }
 # medical-common: the SMART sign-in, the FHIR client, and the
 # health-records/v1 stream and DTOs. Same cli-common tag.
-pk-med-smart = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.8" }
-pk-med-fhir = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.8" }
-pk-med-records = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.8" }
+pk-med-smart = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.9" }
+pk-med-fhir = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.9" }
+pk-med-records = { git = "https://github.com/piekstra/medical-common", tag = "v0.4.9" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }

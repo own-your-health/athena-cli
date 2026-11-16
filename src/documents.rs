@@ -139,13 +139,52 @@ fn category(resource: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The documents a search found, and what its answers said they left out.
+pub struct Listing {
+    pub items: Vec<Item>,
+    /// Each distinct `suppressed` line, by the type searched
+    /// (`pk_med_fhir::SearchResult::withheld`).
+    pub withheld: Vec<Withheld>,
+}
+
+/// A search's answer that said it left results out, in the shape of
+/// records-stream/v1's `forbidden` skip for it: `documents list --json` and
+/// `documents download --all --json` carry these as `withheld`, since a
+/// `documents/v1` skip names a document and these name none.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct Withheld {
+    pub resource_type: &'static str,
+    pub code: &'static str,
+    pub reason: String,
+}
+
+/// `dto` (a `documents/v1` payload as JSON) with `withheld` added when
+/// there is any, so a list nothing was withheld from is unchanged.
+pub fn with_withheld(mut dto: Value, withheld: &[Withheld]) -> Value {
+    if !withheld.is_empty() {
+        if let Some(map) = dto.as_object_mut() {
+            map.insert(
+                "withheld".into(),
+                serde_json::to_value(withheld).unwrap_or(Value::Null),
+            );
+        }
+    }
+    dto
+}
+
 /// Every document of the signed-in patient, newest first, within `range`.
-pub fn list(client: &Client, range: &RangeArgs) -> Result<Vec<Item>, CliError> {
+pub fn list(client: &Client, range: &RangeArgs) -> Result<Listing, CliError> {
     range.validate()?;
     let patient = client.patient().to_string();
     let mut items = Vec::new();
+    let mut withheld = Vec::new();
     for resource_type in ["DocumentReference", "DiagnosticReport"] {
         let found = client.search(resource_type, &[("patient", patient.clone())])?;
+        withheld.extend(found.withheld().into_iter().map(|reason| Withheld {
+            resource_type,
+            code: pk_med_records::stream::skip::FORBIDDEN,
+            reason,
+        }));
         for resource in &found.resources {
             if let Ok(value) = resource.value() {
                 items.extend(items_of(&value));
@@ -167,7 +206,16 @@ pub fn list(client: &Client, range: &RangeArgs) -> Result<Vec<Item>, CliError> {
     if let Some(limit) = range.limit {
         items.truncate(limit as usize);
     }
-    Ok(items)
+    Ok(Listing { items, withheld })
+}
+
+/// The stderr warning for a search whose answer left documents out.
+/// `documents/v1` skips name a document, and these name none.
+pub fn withheld_warning(resource_type: &str, line: &str) -> String {
+    format!(
+        "warning: the {resource_type} search's answer left results out, so documents may be \
+         missing: {line}"
+    )
 }
 
 /// `DocumentReference/<id>[#n]` split into the resource reference and the

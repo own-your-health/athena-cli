@@ -11,7 +11,7 @@ enter this repository, its issues or its pull requests.
 | `mock/search-*.json` | One searchset per exported type, in athenahealth's shapes: `Observation` pages through a `cursor` next link and carries a weight written `3.50` (the stream must keep the server's text); `DiagnosticReport` has a PNG `presentedForm` and a `media` link; `DocumentReference` has a PDF, an HTML body labelled as PDF, and an attachment on another host. `search-Condition-malformed.json` (mode `malformed`) has an entry with no `resourceType` before a good one. `search-Encounter-long-ids.json` (mode `long-ids`) refers to the Practitioner in `practitioner-long-id.json` by a 100-character id and to a Location by a 300-character one; `search-DocumentReference-long-ids.json` names a Binary by a 300-character id. All are letters, `-` and `.`. | `tests/support/mock.rs` |
 | `mock/binary-*.json` | `Binary` resources with base64 `data`: two PDFs (one is HTML claiming to be a PDF) and two PNGs, each under 100 bytes of invented content. | `tests/support/mock.rs` |
 | `mock/practitioner.json`, `organization.json`, `location.json`, `media.json` | The resources the exported ones refer to. | `tests/support/mock.rs` |
-| `mock/outcome-*.json` | `OperationOutcome`s for a refused scope, an unsupported search and an expired token. | `tests/support/mock.rs` |
+| `mock/outcome-*.json` | `OperationOutcome`s for a refused scope, an unsupported search and an expired token, and the `suppressed` warning a search's answer carries beside its results in `withheld` mode (Epic's shape; `{{TYPE}}` is the searched type). | `tests/support/mock.rs` |
 
 `{{BASE}}` in a fixture is replaced with the mock's FHIR base when served.
 

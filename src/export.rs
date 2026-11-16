@@ -146,7 +146,13 @@ pub fn export<W: Write>(
         // ends the stream from inside a page is kept apart from the search's
         // own failure, which is a skip.
         let mut stopped = None;
+        let mut withheld: Vec<String> = Vec::new();
         let outcome = client.search_pages(resource_type, &params, |page| {
+            for line in page.withheld() {
+                if !withheld.contains(&line) {
+                    withheld.push(line);
+                }
+            }
             for why in &page.unreadable {
                 w.skip(Skip {
                     resource_type: None,
@@ -167,6 +173,13 @@ pub fn export<W: Write>(
         });
         if let Some(e) = stopped {
             return Err(e);
+        }
+        // A 200 whose outcome says results were left out (`suppressed`):
+        // the results sent are kept, and each distinct line is a skip of
+        // the type, not of the search (medical-common DESIGN §1.4). Each
+        // type is searched once, so per search is per type.
+        for line in withheld {
+            w.skip(Skip::resource(*resource_type, "", code::FORBIDDEN, line));
         }
         match outcome {
             Ok(found) => {
