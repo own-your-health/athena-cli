@@ -384,10 +384,13 @@ mode `outcome` with an issue coded `suppressed`, which Epic sends as a
 warning naming a sub-resource the client may not read. athena reads each
 search's outcomes with `pk_med_fhir::SearchPage::withheld` (medical-common
 v0.4.9). The export keeps the results that were sent and writes one
-`forbidden` skip per distinct line per search, with the search and the
-server's line as its reason. `documents list` and `documents download
---all` print a warning to stderr per line, since a `documents/v1` skip
-names a document and these name none. **Unverified**: whether athenahealth
+`forbidden` skip per type and distinct line (medical-common DESIGN §1.4):
+`resource_type` set, `id` and `search` unset, the server's line as
+`reason`. A reader takes it as resources of that type the server did not
+serve. `documents list --json` and `documents download --all --json` add a
+`withheld` array of the same `{resource_type, code, reason}` when there is
+any, since a `documents/v1` skip names a document and these name none; both
+also print a warning to stderr per line. **Unverified**: whether athenahealth
 sends such an outcome; the mock's `withheld` mode serves Epic's shape.
 
 ## The sandbox

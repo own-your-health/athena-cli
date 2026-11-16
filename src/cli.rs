@@ -1376,7 +1376,12 @@ fn documents_cmd(ctx: &Ctx, cmd: DocumentsCmd) -> Result<(), CliError> {
             warn_withheld(&listing);
             let docs: Vec<_> = listing.items.into_iter().map(|i| i.document).collect();
             let page = Paged::new("document", docs);
-            page.emit(ctx.json);
+            if ctx.json {
+                let value = serde_json::to_value(&page).unwrap_or(Value::Null);
+                output::json(&documents::with_withheld(value, &listing.withheld));
+            } else {
+                page.emit(false);
+            }
             Ok(())
         }
         DocumentsCmd::Download {
@@ -1443,14 +1448,18 @@ fn download_one(ctx: &Ctx, client: &Client, id: &str, out: &Path) -> Result<(), 
 }
 
 fn warn_withheld(listing: &documents::Listing) {
-    for (resource_type, line) in &listing.withheld {
-        eprintln!("{}", documents::withheld_warning(resource_type, line));
+    for w in &listing.withheld {
+        eprintln!(
+            "{}",
+            documents::withheld_warning(w.resource_type, &w.reason)
+        );
     }
 }
 
 fn download_all(ctx: &Ctx, client: &Client, dir: &Path, range: &RangeArgs) -> Result<(), CliError> {
     let listing = documents::list(client, range)?;
     warn_withheld(&listing);
+    let withheld = listing.withheld;
     let items = listing.items;
     let mut saved = Vec::new();
     let mut skipped = Vec::new();
@@ -1477,7 +1486,8 @@ fn download_all(ctx: &Ctx, client: &Client, dir: &Path, range: &RangeArgs) -> Re
     }
     let batch = DownloadBatch::new(dir.display().to_string(), saved).with_skipped(skipped);
     if ctx.json {
-        output::json(&serde_json::to_value(&batch).unwrap_or(Value::Null));
+        let value = serde_json::to_value(&batch).unwrap_or(Value::Null);
+        output::json(&documents::with_withheld(value, &withheld));
     } else {
         println!(
             "Saved {} documents ({} bytes) to {}{}.",

@@ -1071,25 +1071,46 @@ fn what_a_search_says_it_left_out_is_a_forbidden_skip_and_its_results_are_kept()
         .as_array()
         .unwrap()
         .iter()
-        .filter(|s| s["reason"].as_str().unwrap().contains("left results out"))
+        .filter(|s| {
+            s["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Synthetic Sub-resource")
+        })
         .collect();
-    assert_eq!(withheld.len(), 2, "one per search, not per page: {trailer}");
+    assert_eq!(withheld.len(), 2, "one per type, not per page: {trailer}");
     for (skip, t) in withheld.iter().zip(["Observation", "DocumentReference"]) {
         assert_eq!(skip["code"], "forbidden");
         assert_eq!(skip["resource_type"], t);
-        assert_eq!(skip["search"], t);
-        assert!(skip["reason"].as_str().unwrap().ends_with(&format!(
-            "Client not authorized for {t} - Synthetic Sub-resource"
-        )));
+        assert!(
+            skip.get("search").is_none() && skip.get("id").is_none(),
+            "a type's skip, not a search's: {skip}"
+        );
+        assert_eq!(
+            skip["reason"],
+            format!("Client not authorized for {t} - Synthetic Sub-resource")
+        );
     }
 
     let listing = documents::list(&c, &RangeArgs::default()).unwrap();
     assert!(!listing.items.is_empty());
     assert_eq!(
         listing.withheld,
-        [(
-            "DocumentReference",
-            "Client not authorized for DocumentReference - Synthetic Sub-resource".to_string()
-        )]
+        [documents::Withheld {
+            resource_type: "DocumentReference",
+            code: "forbidden",
+            reason: "Client not authorized for DocumentReference - Synthetic Sub-resource".into(),
+        }]
+    );
+    let dto = documents::with_withheld(
+        serde_json::json!({"schema": "document-list/v1"}),
+        &listing.withheld,
+    );
+    assert_eq!(dto["withheld"][0]["code"], "forbidden");
+    let unchanged =
+        documents::with_withheld(serde_json::json!({"schema": "document-list/v1"}), &[]);
+    assert!(
+        unchanged.get("withheld").is_none(),
+        "unchanged when nothing is withheld"
     );
 }

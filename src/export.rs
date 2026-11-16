@@ -175,15 +175,11 @@ pub fn export<W: Write>(
             return Err(e);
         }
         // A 200 whose outcome says results were left out (`suppressed`):
-        // the results sent are kept, and each distinct line is a skip.
+        // the results sent are kept, and each distinct line is a skip of
+        // the type, not of the search (medical-common DESIGN §1.4). Each
+        // type is searched once, so per search is per type.
         for line in withheld {
-            w.skip(Skip {
-                resource_type: Some(resource_type.to_string()),
-                id: None,
-                search: Some(search.clone()),
-                reason: format!("the server's answer left results out: {line}"),
-                code: code::FORBIDDEN.into(),
-            });
+            w.skip(Skip::resource(*resource_type, "", code::FORBIDDEN, line));
         }
         match outcome {
             Ok(found) => {
