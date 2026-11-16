@@ -12,9 +12,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use pk_cli_core::{CliError, RangeArgs, Reason};
 use pk_cli_documents::{fs_safe, Document, SKIP_NO_FILE, SKIP_UPSTREAM, SKIP_VERIFY_FAILED};
-use pk_med_fhir::is_id;
-#[cfg(test)]
-use pk_med_fhir::MAX_ID_LEN;
+use pk_med_fhir::{is_id, MAX_ID_LEN};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -262,7 +260,7 @@ pub fn fetch(client: &Client, item: &Item) -> Result<Fetched, FetchError> {
             if !is_id(&id) {
                 return Err(FetchError {
                     code: SKIP_VERIFY_FAILED,
-                    error: crate::export::not_an_id("Binary"),
+                    error: file_id_refused(),
                 });
             }
             let binary = client.binary(url).map_err(|error| FetchError {
@@ -423,6 +421,16 @@ fn file_id(id: &str) -> String {
     let hex: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
     let keep = FILE_ID_LEN - hex.len() - 1;
     format!("{}-{hex}", &safe[..keep])
+}
+
+/// Why a document's file is not fetched: its Binary id is outside
+/// `pk_med_fhir::is_id`. The skip names the document by its id.
+fn file_id_refused() -> CliError {
+    CliError::Upstream(format!(
+        "the server names this document's file by an id that is not a FHIR id (1 to \
+         {MAX_ID_LEN} of A-Z a-z 0-9 - ., not only dots), so athena cannot fetch it; the \
+         practice's patient portal may still show it"
+    ))
 }
 
 /// Whether `-o` names a directory to write into: one that exists, or a path

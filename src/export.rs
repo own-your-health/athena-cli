@@ -307,7 +307,7 @@ fn fetch_binary<W: Write>(
 
 /// Why an id a server named is not read: outside `pk_med_fhir::is_id`, the
 /// rule `FhirClient` would refuse it by.
-pub fn not_an_id(resource_type: &str) -> CliError {
+fn not_an_id(resource_type: &str) -> CliError {
     CliError::Upstream(format!(
         "the server named a {resource_type} id that is not a FHIR id (1 to {MAX_ID_LEN} of \
          A-Z a-z 0-9 - ., not only dots), so it was not read"

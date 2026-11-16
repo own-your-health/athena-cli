@@ -731,7 +731,11 @@ fn an_id_past_64_is_read_and_one_past_256_is_skipped() {
     let refused = documents::fetch(&c, long).err().expect("not fetched");
     assert_eq!(refused.code, "verify_failed");
     assert!(
-        refused.error.to_string().contains("not a FHIR id"),
+        refused.error.to_string().contains("not a FHIR id")
+            && refused
+                .error
+                .to_string()
+                .contains("patient portal may still show it"),
         "{}",
         refused.error
     );
