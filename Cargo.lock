@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "athena-cli"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "assert_cmd",
  "base64 0.22.1",
@@ -1525,8 +1525,8 @@ dependencies = [
 
 [[package]]
 name = "pk-med-fhir"
-version = "0.4.5"
-source = "git+https://github.com/piekstra/medical-common?tag=v0.4.5#4d4226bef2f34ef2be14239d911f78136d54662b"
+version = "0.4.7"
+source = "git+https://github.com/piekstra/medical-common?tag=v0.4.7#22213dbc48b3c494b5ed5cb002690be476d0ddef"
 dependencies = [
  "base64 0.22.1",
  "pk-cli-core",
@@ -1537,8 +1537,8 @@ dependencies = [
 
 [[package]]
 name = "pk-med-records"
-version = "0.4.5"
-source = "git+https://github.com/piekstra/medical-common?tag=v0.4.5#4d4226bef2f34ef2be14239d911f78136d54662b"
+version = "0.4.7"
+source = "git+https://github.com/piekstra/medical-common?tag=v0.4.7#22213dbc48b3c494b5ed5cb002690be476d0ddef"
 dependencies = [
  "pk-cli-core",
  "pk-med-fhir",
@@ -1548,8 +1548,8 @@ dependencies = [
 
 [[package]]
 name = "pk-med-smart"
-version = "0.4.5"
-source = "git+https://github.com/piekstra/medical-common?tag=v0.4.5#4d4226bef2f34ef2be14239d911f78136d54662b"
+version = "0.4.7"
+source = "git+https://github.com/piekstra/medical-common?tag=v0.4.7#22213dbc48b3c494b5ed5cb002690be476d0ddef"
 dependencies = [
  "base64 0.22.1",
  "pk-cli-auth",

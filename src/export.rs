@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::fhir::{self, Client};
 use crate::http::same_origin;
 use crate::smart;
-use pk_med_fhir::{is_id, RawResource, MAX_ID_LEN};
+use pk_med_fhir::{is_id, RawResource, ReferenceTarget, MAX_ID_LEN};
 use pk_med_records::dto::RecordsExport;
 use pk_med_records::export::ExportFile;
 
@@ -416,19 +416,28 @@ pub fn collect_references(value: &Value, base: &str, out: &mut BTreeSet<String>)
     }
 }
 
+/// A reference to one of [`REFERENCED_TYPES`] on this FHIR server, as
+/// `Type/id`: relative, or absolute on `base` (`pk_med_fhir::ReferenceTarget`).
+/// One whose id `is_id` refuses is kept too, so the export reports it as a
+/// `verify_failed` skip rather than dropping it; that case carries no base, so
+/// an absolute one is kept only when it starts with `base`.
 fn local_reference(reference: &str, base: &str) -> Option<String> {
-    let relative = if reference.starts_with("https://") || reference.starts_with("http://") {
-        if !same_origin(reference, base) {
-            return None;
+    let (resource_type, id) = match ReferenceTarget::read(reference) {
+        Ok(Some(target)) if target.is_under(base) => (target.resource_type, target.id),
+        Ok(_) => return None,
+        Err(refused) => {
+            let absolute = reference.contains("://");
+            let on_base = reference
+                .strip_prefix(base.trim_end_matches('/'))
+                .is_some_and(|rest| rest.starts_with('/'));
+            if absolute && !on_base {
+                return None;
+            }
+            (refused.resource_type, refused.id)
         }
-        let base_path = base.trim_end_matches('/');
-        reference.strip_prefix(base_path)?.trim_start_matches('/')
-    } else {
-        reference
     };
-    let (resource_type, id) = relative.split_once('/')?;
-    let id = id.split(['/', '?', '#']).next()?;
-    (REFERENCED_TYPES.contains(&resource_type) && !id.is_empty())
+    REFERENCED_TYPES
+        .contains(&resource_type)
         .then(|| format!("{resource_type}/{id}"))
 }
 
@@ -476,6 +485,36 @@ mod tests {
         assert_eq!(
             out.into_iter().collect::<Vec<_>>(),
             vec!["Organization/o-1", "Practitioner/p-1"]
+        );
+    }
+
+    #[test]
+    fn a_reference_to_a_refused_id_is_kept_only_on_this_server() {
+        let long = "x".repeat(300);
+        for (reference, kept) in [
+            (format!("Location/{long}"), true),
+            (format!("{BASE}/Location/{long}"), true),
+            (
+                format!("https://elsewhere.example/fhir/Location/{long}"),
+                false,
+            ),
+            (format!("{BASE}x/Location/{long}"), false),
+            ("Location/l-1/_history/2".to_string(), true),
+            ("#contained-1".to_string(), false),
+            ("urn:uuid:0000".to_string(), false),
+            ("Location?name=x".to_string(), false),
+            ("Patient/a-1.E-2".to_string(), false),
+        ] {
+            assert_eq!(
+                local_reference(&reference, BASE).is_some(),
+                kept,
+                "{reference}"
+            );
+        }
+        assert_eq!(
+            local_reference("Location/l-1/_history/2", BASE).as_deref(),
+            Some("Location/l-1"),
+            "a version is read as the resource"
         );
     }
 }

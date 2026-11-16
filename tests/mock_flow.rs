@@ -207,6 +207,10 @@ fn an_id_token_for_another_sign_in_is_refused() {
     assert_eq!(err.exit_code(), 3);
     assert_eq!(err.reason(), Some(Reason::CredentialRefused));
     assert!(err.message().contains("nonce"), "{err}");
+    assert_eq!(
+        err.remedy(),
+        Some("start again with `athena auth login --org mock`")
+    );
 }
 
 #[test]

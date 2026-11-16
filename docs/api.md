@@ -75,7 +75,7 @@ and chart sharing group ID(s) for that organization." ([FHIR Base URLs][base])
 
 ## Sign-in: SMART standalone patient launch
 
-athena signs in through medical-common's `pk_med_smart` (v0.4.5):
+athena signs in through medical-common's `pk_med_smart` (v0.4.7):
 `discover` reads `.well-known/smart-configuration` (and checks that an https
 server names only https endpoints), `begin` binds the redirect listener and
 builds the authorize URL with PKCE S256, state, `aud` and a nonce, and
@@ -269,7 +269,19 @@ patient id a sign-in names, to `documents download`'s ids and to every id a
 server's answer names before athena reads it. Epic issues ids past 64, and
 athenahealth publishes no bound. **Unverified**: whether athenahealth issues
 any past 64. A reference or attachment naming an id outside the rule is a
-`verify_failed` skip, and nothing is sent for it.
+`verify_failed` skip, and nothing is sent for it. References are read with
+`pk_med_fhir::ReferenceTarget::read`: relative, or absolute on the practice's
+FHIR base; a `_history` version reads as the resource. A contained (`#…`),
+`urn:`, conditional (`Type?…`) or other server's reference is not followed.
+A reference whose id the rule refuses is kept apart (`Err`), so it becomes
+the skip rather than vanishing; it is kept only when it is relative or
+starts with the practice's base.
+
+Remedies. pk_med_smart's errors carry generic remedies (`pk_med_smart::remedy`,
+"sign in again"). athena replaces them with its own commands: a refused code
+exchange or ID token names `athena auth login --org <org>`, and a Keychain
+item that does not read names `athena auth logout --org <org> --patient <id>`,
+then `auth login`.
 
 ### Documents and Binary
 
