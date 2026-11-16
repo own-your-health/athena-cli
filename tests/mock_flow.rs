@@ -716,7 +716,7 @@ fn an_id_past_64_is_read_and_one_past_256_is_skipped() {
         .filter(|s| s["resource_type"] == "Location")
         .collect();
     assert_eq!(location.len(), 1, "{trailer}");
-    assert_eq!(location[0]["code"], "verify_failed");
+    assert_eq!(location[0]["code"], "invalid_reference");
     assert_eq!(location[0]["id"].as_str().unwrap().len(), 300);
     assert!(
         location[0]["reason"]
@@ -733,7 +733,7 @@ fn an_id_past_64_is_read_and_one_past_256_is_skipped() {
         .filter(|s| s["resource_type"] == "Binary")
         .collect();
     assert_eq!(binary.len(), 1, "{trailer}");
-    assert_eq!(binary[0]["code"], "verify_failed");
+    assert_eq!(binary[0]["code"], "invalid_reference");
     assert_eq!(binary[0]["id"].as_str().unwrap().len(), 300);
 
     let items = documents::list(&c, &RangeArgs::default()).unwrap();
@@ -742,7 +742,7 @@ fn an_id_past_64_is_read_and_one_past_256_is_skipped() {
         .find(|i| i.document.id == "DocumentReference/doc-long-1")
         .expect("the document is listed");
     let refused = documents::fetch(&c, long).err().expect("not fetched");
-    assert_eq!(refused.code, "verify_failed");
+    assert_eq!(refused.code, "invalid_reference");
     assert!(
         refused.error.to_string().contains("not a FHIR id")
             && refused
