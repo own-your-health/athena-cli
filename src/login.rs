@@ -143,7 +143,18 @@ impl Pending {
             block_on(
                 self.signin
                     .exchange(&oauth, &self.client, &code, &self.org, now),
-            )?;
+            )
+            .map_err(|e| {
+                // pk_med_smart's remedies are generic ("sign in again").
+                if e.is_auth() {
+                    e.with_remedy(format!(
+                        "start again with `athena auth login --org {}`",
+                        self.org
+                    ))
+                } else {
+                    e
+                }
+            })?;
         let patient = session.patient.clone().ok_or_else(|| {
             CliError::Upstream(
                 "athenahealth's answer named no patient: the sign-in must pick one patient record"

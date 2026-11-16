@@ -82,7 +82,20 @@ impl SessionStore for Keychain {
 
 /// The stored session at `account`, or exit 3 naming the sign-in to redo.
 pub fn load(store: &dyn SessionStore, entry: &SessionEntry) -> Result<SmartSession, CliError> {
-    store.load(&entry.key())?.ok_or_else(|| {
+    let found = store.load(&entry.key()).map_err(|e| {
+        if e.reason() == Some(Reason::CredentialUnreadable) {
+            e.with_remedy(format!(
+                "allow athena when the Keychain asks; if the item still does not read, remove it \
+                 with `athena auth logout --org {org} --patient {patient}`, then sign in again \
+                 with `athena auth login --org {org}`",
+                org = entry.org,
+                patient = entry.patient
+            ))
+        } else {
+            e
+        }
+    })?;
+    found.ok_or_else(|| {
         CliError::Auth(format!(
             "the keychain holds no sign-in for {} at {}",
             entry.patient, entry.org
@@ -391,6 +404,32 @@ mod tests {
         store.save(&s).unwrap();
         assert!(store.load("smart/clinic/a-1.E-1").unwrap().is_some());
         assert!(store.delete("smart/clinic/a-1.E-1").unwrap());
+    }
+
+    #[test]
+    fn an_item_that_does_not_read_names_athenas_commands() {
+        struct Unreadable;
+        impl SessionStore for Unreadable {
+            fn load(&self, _: &str) -> Result<Option<SmartSession>, CliError> {
+                Err(CliError::Keychain("the item does not read".into())
+                    .because(Reason::CredentialUnreadable)
+                    .with_remedy(pk_med_smart::remedy::CLEAR_AND_SIGN_IN_AGAIN))
+            }
+            fn save(&self, _: &SmartSession) -> Result<(), CliError> {
+                Ok(())
+            }
+            fn delete(&self, _: &str) -> Result<bool, CliError> {
+                Ok(false)
+            }
+        }
+        let err = load(&Unreadable, &entry("clinic", "a-1.E-1", None)).unwrap_err();
+        assert_eq!(err.reason(), Some(Reason::CredentialUnreadable));
+        let remedy = err.remedy().unwrap();
+        assert!(
+            remedy.contains("athena auth logout --org clinic --patient a-1.E-1")
+                && remedy.contains("athena auth login --org clinic"),
+            "{remedy}"
+        );
     }
 
     #[test]
