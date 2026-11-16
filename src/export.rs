@@ -310,6 +310,9 @@ fn skip_or_fail<W: Write>(
         (_, Some(Reason::Forbidden)) => code::FORBIDDEN,
         (CliError::NotFound(_), _) => code::NOT_FOUND,
         (_, Some(Reason::BadRequest)) => code::UNSUPPORTED,
+        // pk_med_fhir refused an id the server named (not a FHIR id, or over
+        // `MAX_ID_LEN`) before sending anything: that one item is skipped.
+        (CliError::Usage(_), _) if id.is_some() => code::VERIFY_FAILED,
         (CliError::Upstream(_), _) if tripped => {
             return Err(CliError::Upstream(format!(
                 "{} requests in a row failed, so the export stopped: {}",

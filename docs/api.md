@@ -75,7 +75,7 @@ and chart sharing group ID(s) for that organization." ([FHIR Base URLs][base])
 
 ## Sign-in: SMART standalone patient launch
 
-athena signs in through medical-common's `pk_med_smart` (v0.4.2):
+athena signs in through medical-common's `pk_med_smart` (v0.4.3):
 `discover` reads `.well-known/smart-configuration` (and checks that an https
 server names only https endpoints), `begin` binds the redirect listener and
 builds the authorize URL with PKCE S256, state, `aud` and a nonce, and
@@ -235,6 +235,13 @@ CareTeam, Goal, Device, Coverage, RelatedPerson; then `Patient/<id>` by read,
 and Practitioner, Organization, Location, Medication and Media by read when an
 exported resource refers to them.
 
+Ids. FHIR R4 allows 1 to 64 of `A-Z a-z 0-9 - .`. athena accepts the same
+characters at up to `pk_med_fhir::MAX_ID_LEN` (256, medical-common v0.4.3),
+in reads, the patient id a sign-in names and `documents download`'s ids. Epic
+issues ids past 64, and athenahealth publishes no bound. **Unverified**:
+whether athenahealth issues any past 64. A server's reference to an id the
+client refuses is a `verify_failed` skip, and nothing is sent for it.
+
 ### Documents and Binary
 
 - `Binary` is read-only (`GET Binary/<id>`), answering FHIR JSON with base64
@@ -253,6 +260,12 @@ exported resource refers to them.
 
 athena fetches only `Binary` on the signed-in FHIR server's own origin; an
 attachment elsewhere is a skip (`unsupported`), never a request with the token.
+
+`documents download` names a file `<date>_<name>_<id>.<ext>`: at most 60
+characters of the name, and the id whole up to 64 characters. A longer id
+keeps its first 47 characters and the first 16 hex digits of its SHA-256, so
+a name stays near 150 bytes (a file name allows 255) and two ids sharing a
+prefix still name two files.
 
 ### Imaging
 

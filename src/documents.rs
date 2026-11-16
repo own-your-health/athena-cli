@@ -12,7 +12,9 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use pk_cli_core::{CliError, RangeArgs, Reason};
 use pk_cli_documents::{fs_safe, Document, SKIP_NO_FILE, SKIP_UPSTREAM, SKIP_VERIFY_FAILED};
+use pk_med_fhir::MAX_ID_LEN;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::export::binary_id;
 use crate::fhir::Client;
@@ -184,7 +186,8 @@ pub fn parse_id(id: &str) -> Result<(String, usize), CliError> {
     let (resource_type, rid) = reference.split_once('/').ok_or_else(|| bad_id(id))?;
     let ok_type = matches!(resource_type, "DocumentReference" | "DiagnosticReport");
     let ok_id = !rid.is_empty()
-        && rid.len() <= 64
+        && rid.len() <= MAX_ID_LEN
+        && !rid.chars().all(|c| c == '.')
         && rid
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
@@ -259,9 +262,11 @@ pub fn fetch(client: &Client, item: &Item) -> Result<Fetched, FetchError> {
                     ),
                 });
             }
+            // A usage error is pk_med_fhir refusing the server's id.
             let binary = client.binary(url).map_err(|error| FetchError {
                 code: match (error.base(), error.reason()) {
                     (CliError::NotFound(_), _) | (_, Some(Reason::Forbidden)) => SKIP_NO_FILE,
+                    (CliError::Usage(_), _) => SKIP_VERIFY_FAILED,
                     _ => SKIP_UPSTREAM,
                 },
                 error,
@@ -380,11 +385,19 @@ pub fn extension(content_type: Option<&str>) -> &'static str {
     }
 }
 
-/// `<date>_<name>_<id>.<ext>`, every part through `fs_safe`.
+/// The most of an id a file name carries. With the date, 60 characters of
+/// name and the extension it keeps a name near 150 bytes, well inside the
+/// 255 a macOS or Linux file name allows.
+pub const FILE_ID_LEN: usize = 64;
+
+/// `<date>_<name>_<id>.<ext>`, every part through `fs_safe`. An id longer
+/// than [`FILE_ID_LEN`] (FHIR ids reach `pk_med_fhir::MAX_ID_LEN`, 256) keeps
+/// its first 47 characters and the first 16 hex digits of its SHA-256, so two
+/// ids that share a prefix still name two files, the same ones every run.
 pub fn file_name(item: &Item, content_type: Option<&str>) -> String {
     let date = item.document.date.as_deref().unwrap_or("undated");
     let name: String = fs_safe(&item.document.name).chars().take(60).collect();
-    let id = fs_safe(
+    let id = file_id(
         item.document
             .id
             .rsplit('/')
@@ -398,6 +411,17 @@ pub fn file_name(item: &Item, content_type: Option<&str>) -> String {
         id,
         extension(content_type)
     )
+}
+
+fn file_id(id: &str) -> String {
+    let safe = fs_safe(id);
+    if safe.len() <= FILE_ID_LEN {
+        return safe;
+    }
+    let hash = Sha256::digest(id.as_bytes());
+    let hex: String = hash.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    let keep = FILE_ID_LEN - hex.len() - 1;
+    format!("{}-{hex}", &safe[..keep])
 }
 
 /// Whether `-o` names a directory to write into: one that exists, or a path
@@ -469,10 +493,15 @@ mod tests {
             "DocumentReference/",
             "DocumentReference/d#0",
             "DocumentReference/../x",
+            "DocumentReference/..",
             "d-1",
         ] {
             assert_eq!(parse_id(bad).unwrap_err().exit_code(), 2, "{bad}");
         }
+        let longest = format!("DocumentReference/{}", "d".repeat(MAX_ID_LEN));
+        assert!(parse_id(&longest).is_ok(), "ids past FHIR R4's 64");
+        let over = format!("DocumentReference/{}", "d".repeat(MAX_ID_LEN + 1));
+        assert_eq!(parse_id(&over).unwrap_err().exit_code(), 2);
     }
 
     #[test]
@@ -496,5 +525,30 @@ mod tests {
         let name = file_name(&item, Some("application/pdf"));
         assert_eq!(name, "2026-01-02_etc_passwd_d-1.pdf");
         assert!(!name.contains('/'));
+    }
+
+    #[test]
+    fn a_long_id_keeps_a_file_name_short_and_distinct() {
+        let named = |id: &str| {
+            let mut item = items_of(&json!({"resourceType":"DocumentReference","id":id,
+                "description":"x".repeat(80),"content":[{"attachment":{"url":"Binary/b"}}]}))
+            .remove(0);
+            item.document.date = Some("2026-01-02".into());
+            file_name(&item, Some("application/pdf"))
+        };
+        let exact = "e".repeat(FILE_ID_LEN);
+        assert!(
+            named(&exact).ends_with(&format!("_{exact}.pdf")),
+            "64 is kept whole"
+        );
+        let a = format!("{}a", "d".repeat(MAX_ID_LEN - 1));
+        let b = format!("{}b", "d".repeat(MAX_ID_LEN - 1));
+        let (na, nb) = (named(&a), named(&b));
+        assert_ne!(na, nb, "ids sharing a prefix name two files");
+        assert_eq!(na, named(&a), "the same id names the same file");
+        assert!(na.len() <= 150, "{} bytes: {na}", na.len());
+        let id_part = na.rsplit('_').next().unwrap().trim_end_matches(".pdf");
+        assert_eq!(id_part.len(), FILE_ID_LEN, "{id_part}");
+        assert!(id_part.starts_with(&"d".repeat(47)));
     }
 }
