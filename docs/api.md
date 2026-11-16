@@ -75,7 +75,7 @@ and chart sharing group ID(s) for that organization." ([FHIR Base URLs][base])
 
 ## Sign-in: SMART standalone patient launch
 
-athena signs in through medical-common's `pk_med_smart` (v0.4.8):
+athena signs in through medical-common's `pk_med_smart` (v0.4.9):
 `discover` reads `.well-known/smart-configuration` (and checks that an https
 server names only https endpoints), `begin` binds the redirect listener and
 builds the authorize URL with PKCE S256, state, `aud` and a nonce, and
@@ -378,6 +378,17 @@ used when the contract knows it: `login`, `unknown` or `expired` is exit 3
 skip), and 5xx exit 5. A 429, a 5xx, or a 403 whose body is an HTML page
 (athenahealth's edge rather than the FHIR server) is exit 5 with no reason,
 so it counts toward the circuit breaker instead of reading as a refusal.
+
+A 2xx search can say it left results out: an `OperationOutcome` entry of
+mode `outcome` with an issue coded `suppressed`, which Epic sends as a
+warning naming a sub-resource the client may not read. athena reads each
+search's outcomes with `pk_med_fhir::SearchPage::withheld` (medical-common
+v0.4.9). The export keeps the results that were sent and writes one
+`forbidden` skip per distinct line per search, with the search and the
+server's line as its reason. `documents list` and `documents download
+--all` print a warning to stderr per line, since a `documents/v1` skip
+names a document and these name none. **Unverified**: whether athenahealth
+sends such an outcome; the mock's `withheld` mode serves Epic's shape.
 
 ## The sandbox
 

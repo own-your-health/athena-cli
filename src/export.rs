@@ -146,7 +146,13 @@ pub fn export<W: Write>(
         // ends the stream from inside a page is kept apart from the search's
         // own failure, which is a skip.
         let mut stopped = None;
+        let mut withheld: Vec<String> = Vec::new();
         let outcome = client.search_pages(resource_type, &params, |page| {
+            for line in page.withheld() {
+                if !withheld.contains(&line) {
+                    withheld.push(line);
+                }
+            }
             for why in &page.unreadable {
                 w.skip(Skip {
                     resource_type: None,
@@ -167,6 +173,17 @@ pub fn export<W: Write>(
         });
         if let Some(e) = stopped {
             return Err(e);
+        }
+        // A 200 whose outcome says results were left out (`suppressed`):
+        // the results sent are kept, and each distinct line is a skip.
+        for line in withheld {
+            w.skip(Skip {
+                resource_type: Some(resource_type.to_string()),
+                id: None,
+                search: Some(search.clone()),
+                reason: format!("the server's answer left results out: {line}"),
+                code: code::FORBIDDEN.into(),
+            });
         }
         match outcome {
             Ok(found) => {

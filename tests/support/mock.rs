@@ -20,7 +20,10 @@
 //! DocumentReference's file is a Binary with a 300-character id), `forbidden`
 //! (FHIR answers 403), `grant-v1` (the token answer drops every v2 scope, as
 //! for an app registered with SMART V1 scopes only), `grant-partial` (it
-//! drops Coverage).
+//! drops Coverage), `withheld` (every page of the Observation and
+//! DocumentReference searches carries an OperationOutcome coded `suppressed`
+//! beside its results, as Epic sends for a sub-resource the client may not
+//! read).
 
 #![allow(dead_code)]
 
@@ -75,6 +78,7 @@ fn fixture(path: &str) -> Option<&'static str> {
         "outcome-forbidden" => fixture!("outcome-forbidden.json"),
         "outcome-unsupported" => fixture!("outcome-unsupported.json"),
         "outcome-expired" => fixture!("outcome-expired.json"),
+        "outcome-suppressed" => fixture!("outcome-suppressed.json"),
         _ => return None,
     })
 }
@@ -412,6 +416,7 @@ impl Mock {
         let malformed = s.mode == "malformed";
         let page2_down = s.mode == "page2-down";
         let long_ids = s.mode == "long-ids";
+        let withheld = s.mode == "withheld";
         drop(s);
         let serve = |text: &str| fhir_json(200, &text.replace("{{BASE}}", &base));
         if !id.is_empty() {
@@ -442,7 +447,7 @@ impl Mock {
         if q.get("patient").map(String::as_str) != Some(PATIENT) {
             return fhir_json(400, fixture("outcome-unsupported").unwrap());
         }
-        match resource_type {
+        let found = match resource_type {
             "Goal" => fhir_json(403, fixture("outcome-forbidden").unwrap()),
             // An entry with no resourceType, then a good one.
             "Condition" if malformed => serve(fixture("Condition-malformed").unwrap()),
@@ -459,8 +464,33 @@ impl Mock {
                     "{{\"resourceType\":\"Bundle\",\"type\":\"searchset\",\"total\":0,\"link\":[{{\"relation\":\"self\",\"url\":\"{base}/{t}\"}}]}}"
                 )),
             },
+        };
+        if withheld
+            && found.status == 200
+            && matches!(resource_type, "Observation" | "DocumentReference")
+        {
+            return with_outcome(found, resource_type);
         }
+        found
     }
+}
+
+/// `found` with the `suppressed` outcome added as an entry of mode `outcome`.
+fn with_outcome(mut found: Http, resource_type: &str) -> Http {
+    let mut bundle: serde_json::Value = serde_json::from_str(&found.body).unwrap();
+    let outcome: serde_json::Value = serde_json::from_str(
+        &fixture("outcome-suppressed")
+            .unwrap()
+            .replace("{{TYPE}}", resource_type),
+    )
+    .unwrap();
+    let entry = serde_json::json!({"search": {"mode": "outcome"}, "resource": outcome});
+    match bundle["entry"].as_array_mut() {
+        Some(entries) => entries.push(entry),
+        None => bundle["entry"] = serde_json::json!([entry]),
+    }
+    found.body = bundle.to_string();
+    found
 }
 
 fn find_in_bundle(bundle: &str, id: &str) -> Option<String> {

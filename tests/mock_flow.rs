@@ -513,7 +513,7 @@ fn documents_are_listed_newest_first_and_checked_on_download() {
     let tokens = sign_in(&m, &http);
     let store = Arc::new(MemoryStore::default());
     let c = client(&http, &store, &tokens);
-    let items = documents::list(&c, &RangeArgs::default()).unwrap();
+    let items = documents::list(&c, &RangeArgs::default()).unwrap().items;
     let ids: Vec<&str> = items.iter().map(|i| i.document.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -554,7 +554,7 @@ fn documents_are_listed_newest_first_and_checked_on_download() {
         since: Some("2026-02-01".into()),
         ..RangeArgs::default()
     };
-    assert_eq!(documents::list(&c, &since).unwrap().len(), 2);
+    assert_eq!(documents::list(&c, &since).unwrap().items.len(), 2);
 }
 
 #[test]
@@ -736,7 +736,7 @@ fn an_id_past_64_is_read_and_one_past_256_is_skipped() {
     assert_eq!(binary[0]["code"], "invalid_reference");
     assert_eq!(binary[0]["id"].as_str().unwrap().len(), 300);
 
-    let items = documents::list(&c, &RangeArgs::default()).unwrap();
+    let items = documents::list(&c, &RangeArgs::default()).unwrap().items;
     let long = items
         .iter()
         .find(|i| i.document.id == "DocumentReference/doc-long-1")
@@ -1035,4 +1035,61 @@ fn a_partial_grant_names_the_types_left_out() {
     let m = Mock::start(0);
     let outcome = sign_in_granting(&m, "grant-partial", ScopeSpelling::V2).expect("signed in");
     assert_eq!(outcome.not_granted, ["Coverage"]);
+}
+
+#[test]
+fn what_a_search_says_it_left_out_is_a_forbidden_skip_and_its_results_are_kept() {
+    let m = Mock::start(0);
+    let http = BlockingTransport::new().unwrap();
+    let tokens = sign_in(&m, &http);
+    let store = Arc::new(MemoryStore::default());
+    let c = client(&http, &store, &tokens);
+    let (normal, result) = pull(&c, &tokens);
+    result.unwrap();
+    let observations = |text: &str| {
+        lines(text)
+            .iter()
+            .filter(|l| l["resourceType"] == "Observation")
+            .count()
+    };
+    m.set_mode("withheld");
+    let (text, result) = pull(&c, &tokens);
+    result.expect("a warning beside the results is no failure");
+    assert_eq!(
+        observations(&text),
+        observations(&normal),
+        "both pages kept"
+    );
+    let out = lines(&text);
+    assert!(
+        !out.iter().any(|l| l["resourceType"] == "OperationOutcome"),
+        "an outcome is not a record"
+    );
+    let trailer = out.last().unwrap();
+    assert_eq!(trailer["complete"], true);
+    let withheld: Vec<&Value> = trailer["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["reason"].as_str().unwrap().contains("left results out"))
+        .collect();
+    assert_eq!(withheld.len(), 2, "one per search, not per page: {trailer}");
+    for (skip, t) in withheld.iter().zip(["Observation", "DocumentReference"]) {
+        assert_eq!(skip["code"], "forbidden");
+        assert_eq!(skip["resource_type"], t);
+        assert_eq!(skip["search"], t);
+        assert!(skip["reason"].as_str().unwrap().ends_with(&format!(
+            "Client not authorized for {t} - Synthetic Sub-resource"
+        )));
+    }
+
+    let listing = documents::list(&c, &RangeArgs::default()).unwrap();
+    assert!(!listing.items.is_empty());
+    assert_eq!(
+        listing.withheld,
+        [(
+            "DocumentReference",
+            "Client not authorized for DocumentReference - Synthetic Sub-resource".to_string()
+        )]
+    );
 }

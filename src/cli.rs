@@ -1370,9 +1370,11 @@ fn documents_cmd(ctx: &Ctx, cmd: DocumentsCmd) -> Result<(), CliError> {
             range.validate()?;
             let (entry, stored) = open_session(ctx, &select)?;
             let client = start_client(ctx, &entry, &stored)?;
-            let items = documents::list(&client, &range);
+            let listing = documents::list(&client, &range);
             note_renewal(ctx, &entry, &stored, &client.session());
-            let docs: Vec<_> = items?.into_iter().map(|i| i.document).collect();
+            let listing = listing?;
+            warn_withheld(&listing);
+            let docs: Vec<_> = listing.items.into_iter().map(|i| i.document).collect();
             let page = Paged::new("document", docs);
             page.emit(ctx.json);
             Ok(())
@@ -1440,8 +1442,16 @@ fn download_one(ctx: &Ctx, client: &Client, id: &str, out: &Path) -> Result<(), 
     Ok(())
 }
 
+fn warn_withheld(listing: &documents::Listing) {
+    for (resource_type, line) in &listing.withheld {
+        eprintln!("{}", documents::withheld_warning(resource_type, line));
+    }
+}
+
 fn download_all(ctx: &Ctx, client: &Client, dir: &Path, range: &RangeArgs) -> Result<(), CliError> {
-    let items = documents::list(client, range)?;
+    let listing = documents::list(client, range)?;
+    warn_withheld(&listing);
+    let items = listing.items;
     let mut saved = Vec::new();
     let mut skipped = Vec::new();
     for item in items {
