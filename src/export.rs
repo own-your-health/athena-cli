@@ -10,7 +10,7 @@ use serde_json::Value;
 
 use crate::fhir::{self, Client};
 use crate::http::same_origin;
-use crate::smart::{granted_types, PATIENT_TYPES};
+use crate::smart;
 use pk_med_fhir::{is_id, RawResource, MAX_ID_LEN};
 use pk_med_records::dto::RecordsExport;
 use pk_med_records::export::ExportFile;
@@ -101,15 +101,7 @@ pub fn export<W: Write>(
     since: Option<&str>,
 ) -> Result<(), CliError> {
     let patient = client.patient().to_string();
-    let granted = {
-        let g = granted_types(client.session().tokens.scope.as_deref().unwrap_or_default());
-        if g.is_empty() {
-            // A token answer without `scope` grants what was asked for.
-            PATIENT_TYPES.iter().map(|t| t.to_string()).collect()
-        } else {
-            g
-        }
-    };
+    let granted = smart::granted(client.session().tokens.scope.as_deref());
     let mut references = BTreeSet::new();
     let binary_granted = granted.contains("Binary");
 

@@ -27,7 +27,7 @@ use pk_med_fhir::is_id;
 use pk_med_fhir::MAX_ID_LEN;
 use pk_med_smart::{begin, discover, LaunchRequest, SmartApp, SmartSession, SmartSignIn};
 
-use crate::config::Practice;
+use crate::config::{Practice, ScopeSpelling};
 use crate::env::Environment;
 use crate::session::REVOCATION_ENDPOINT;
 use crate::smart::{self, Athenahealth};
@@ -47,12 +47,34 @@ pub struct Request<'a> {
     pub client_id: &'a str,
     pub ports: &'a [u16],
     pub timeout: Duration,
+    /// The scope spelling to ask in (`athena config set scope-version`).
+    pub scope_version: ScopeSpelling,
 }
 
 /// A finished sign-in, not yet stored.
 pub struct Outcome {
     pub session: SmartSession,
     pub relationship: Option<&'static str>,
+    /// The types athena asked to read that athenahealth did not grant: each
+    /// export reports them as `forbidden` skips.
+    pub not_granted: Vec<&'static str>,
+}
+
+/// What to do when athenahealth grants fewer read scopes than athena asked
+/// for: the app's registration lacks them.
+pub fn scope_remedy(org: &str, asked: ScopeSpelling) -> String {
+    let other = match asked {
+        ScopeSpelling::V2 => {
+            "; an app that holds only FHIR R4 SMART V1 scopes signs in with `athena config set \
+             scope-version v1`"
+        }
+        ScopeSpelling::V1 => "; or return to SMART v2 with `athena config unset scope-version`",
+    };
+    format!(
+        "add FHIR R4 SMART V2 read and search for each type to the app's scopes in \
+         athenahealth's Developer Portal (docs/registration.md, step 5){other}; then run \
+         `athena auth login --org {org}` again"
+    )
 }
 
 /// The steps before the browser opens: discovery, the listener, the URL and
@@ -64,6 +86,7 @@ pub struct Pending {
     org: String,
     revocation_endpoint: Option<String>,
     timeout: Duration,
+    scope_version: ScopeSpelling,
 }
 
 /// Discover the server, bind the listener and serve the start page.
@@ -81,7 +104,7 @@ pub fn prepare(http: &BlockingTransport, request: &Request<'_>) -> Result<Pendin
             config: &config,
             fhir_base: &fhir_base,
             aud: None,
-            scopes: smart::scopes(),
+            scopes: smart::scopes(request.scope_version.version()),
             quirks: &Athenahealth,
         },
     )?;
@@ -93,6 +116,7 @@ pub fn prepare(http: &BlockingTransport, request: &Request<'_>) -> Result<Pendin
         org: request.org.to_string(),
         revocation_endpoint: config.revocation_endpoint.clone(),
         timeout: request.timeout,
+        scope_version: request.scope_version,
     })
 }
 
@@ -132,10 +156,24 @@ impl Pending {
                 .extra
                 .insert(REVOCATION_ENDPOINT.into(), endpoint.into());
         }
+        let not_granted = smart::not_granted(session.tokens.scope.as_deref());
+        if not_granted.len() == smart::PATIENT_TYPES.len() {
+            // Nothing could be read: the sign-in is not stored, and its
+            // tokens are revoked rather than left live and unknown.
+            crate::logout::revoke_all(http, &session);
+            return Err(CliError::Auth(format!(
+                "athenahealth granted none of the {} read scopes athena asked for (SMART {}), \
+                 so the sign-in was not stored",
+                not_granted.len(),
+                self.scope_version.as_str()
+            ))
+            .with_remedy(scope_remedy(&self.org, self.scope_version)));
+        }
         let relationship = smart::relationship(session.fhir_user.as_deref(), &patient);
         Ok(Outcome {
             session,
             relationship,
+            not_granted,
         })
     }
 }

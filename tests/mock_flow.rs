@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use athena::config::Practice;
+use athena::config::{Practice, ScopeSpelling};
 use athena::documents;
 use athena::env::Environment;
 use athena::export;
@@ -37,6 +37,14 @@ fn practice(m: &Mock) -> Practice {
 }
 
 fn prepare(m: &Mock, http: &BlockingTransport) -> login::Pending {
+    prepare_with(m, http, ScopeSpelling::V2)
+}
+
+fn prepare_with(
+    m: &Mock,
+    http: &BlockingTransport,
+    scope_version: ScopeSpelling,
+) -> login::Pending {
     login::prepare(
         http,
         &login::Request {
@@ -46,6 +54,7 @@ fn prepare(m: &Mock, http: &BlockingTransport) -> login::Pending {
             client_id: mock::CLIENT_ID,
             ports: &[0],
             timeout: Duration::from_secs(30),
+            scope_version,
         },
     )
     .expect("prepare the sign-in")
@@ -973,4 +982,53 @@ fn logout_leaves_the_patient_when_the_v0_2_item_cannot_be_read() {
     assert!(out.revoked, "the new item's tokens were revoked");
     assert!(store.load(&key("mock", mock::PATIENT)).unwrap().is_none());
     assert!(!old.is_empty());
+}
+
+/// A sign-in in `mode`, asking in `version`, through the browser.
+fn sign_in_granting(
+    m: &Mock,
+    mode: &str,
+    version: ScopeSpelling,
+) -> Result<login::Outcome, CliError> {
+    let http = BlockingTransport::new().unwrap();
+    m.set_mode(mode);
+    let pending = prepare_with(m, &http, version);
+    let start = pending.start_url();
+    let browser = thread::spawn(move || mock::click_through(&start));
+    let outcome = pending.finish(&http, now());
+    browser.join().unwrap();
+    outcome
+}
+
+#[test]
+fn a_grant_with_no_read_scope_is_refused_and_names_the_registration() {
+    let m = Mock::start(0);
+    let err = sign_in_granting(&m, "grant-v1", ScopeSpelling::V2)
+        .err()
+        .expect("nothing could be read");
+    assert_eq!(err.exit_code(), 3);
+    let text = err.to_string();
+    assert!(text.contains("none of the 26 read scopes"), "{text}");
+    assert!(text.contains("docs/registration.md, step 5"), "{text}");
+    assert!(
+        text.contains("athena config set scope-version v1"),
+        "{text}"
+    );
+    assert_eq!(revocations(&m), 2, "the unstored tokens are revoked");
+}
+
+#[test]
+fn a_v1_registration_signs_in_with_scope_version_v1() {
+    let m = Mock::start(0);
+    let outcome = sign_in_granting(&m, "grant-v1", ScopeSpelling::V1).expect("signed in");
+    assert!(outcome.not_granted.is_empty(), "{:?}", outcome.not_granted);
+    let scope = outcome.session.tokens.scope.clone().unwrap();
+    assert!(scope.contains("patient/Patient.read") && !scope.contains(".rs"));
+}
+
+#[test]
+fn a_partial_grant_names_the_types_left_out() {
+    let m = Mock::start(0);
+    let outcome = sign_in_granting(&m, "grant-partial", ScopeSpelling::V2).expect("signed in");
+    assert_eq!(outcome.not_granted, ["Coverage"]);
 }

@@ -18,7 +18,9 @@
 //! 503), `long-ids` (an Encounter refers to a Practitioner by a 100-character
 //! id, which reads, and a Location by a 300-character one; the one
 //! DocumentReference's file is a Binary with a 300-character id), `forbidden`
-//! (FHIR answers 403).
+//! (FHIR answers 403), `grant-v1` (the token answer drops every v2 scope, as
+//! for an app registered with SMART V1 scopes only), `grant-partial` (it
+//! drops Coverage).
 
 #![allow(dead_code)]
 
@@ -308,7 +310,17 @@ impl Mock {
                 let refresh = format!("mock-refresh-{n}");
                 s.access.push(access.clone());
                 s.refresh.push(refresh.clone());
-                let granted: Vec<&str> = scope.split(' ').collect();
+                // `grant-v1`: an app registered with SMART V1 scopes only,
+                // so no v2 read is granted. `grant-partial`: Coverage is not.
+                let mode = s.mode.clone();
+                let granted: Vec<&str> = scope
+                    .split(' ')
+                    .filter(|item| match mode.as_str() {
+                        "grant-v1" => !item.ends_with(".rs"),
+                        "grant-partial" => !item.starts_with("patient/Coverage."),
+                        _ => true,
+                    })
+                    .collect();
                 // `nonce`: an ID token that answers some other sign-in.
                 let nonce = if s.mode == "nonce" {
                     "another-sign-in".to_string()

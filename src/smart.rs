@@ -60,8 +60,31 @@ pub const PATIENT_TYPES: &[&str] = &[
 /// picker, a refresh token, and read and search per type in SMART v2
 /// spelling (`patient/<Type>.rs`), the product in athenahealth's scope
 /// editor that offers every type athena reads (`docs/registration.md`).
-pub fn scopes() -> ScopeSet {
-    ScopeSet::standalone_patient().read_types(ScopeVersion::V2, PATIENT_TYPES)
+/// `version` is `v1` (`patient/<Type>.read`) only for an app that holds
+/// SMART V1 scopes alone (`athena config set scope-version v1`).
+pub fn scopes(version: ScopeVersion) -> ScopeSet {
+    ScopeSet::standalone_patient().read_types(version, PATIENT_TYPES)
+}
+
+/// The types a token answer's `scope` grants reading. An answer without
+/// `scope`, or with an empty one, grants what was asked for (RFC 6749 §5.1):
+/// every one of [`PATIENT_TYPES`].
+pub fn granted(scope: Option<&str>) -> BTreeSet<String> {
+    match scope.filter(|s| !s.trim().is_empty()) {
+        None => PATIENT_TYPES.iter().map(|t| t.to_string()).collect(),
+        Some(scope) => granted_types(scope),
+    }
+}
+
+/// The types athena asks for that `scope` does not grant, in
+/// [`PATIENT_TYPES`] order.
+pub fn not_granted(scope: Option<&str>) -> Vec<&'static str> {
+    let granted = granted(scope);
+    PATIENT_TYPES
+        .iter()
+        .copied()
+        .filter(|t| !granted.contains(*t))
+        .collect()
 }
 
 /// The resource types a granted scope string allows reading, in SMART v1
@@ -116,7 +139,7 @@ mod tests {
 
     #[test]
     fn the_scope_names_every_type_and_no_wildcard() {
-        let scope = scopes().to_string();
+        let scope = scopes(ScopeVersion::V2).to_string();
         assert!(scope.starts_with("openid fhirUser launch/patient offline_access "));
         assert!(scope.contains("patient/DocumentReference.rs"));
         assert!(scope.contains("patient/Binary.rs"));
@@ -124,6 +147,34 @@ mod tests {
         assert_eq!(granted_types(&scope).len(), PATIENT_TYPES.len());
         assert!(!scope.contains('*'));
         assert_eq!(scope.split(' ').count(), 4 + PATIENT_TYPES.len());
+    }
+
+    #[test]
+    fn v1_is_asked_only_when_configured() {
+        let scope = scopes(ScopeVersion::V1).to_string();
+        assert!(scope.contains("patient/Patient.read"));
+        assert!(!scope.contains(".rs"));
+        assert_eq!(granted_types(&scope).len(), PATIENT_TYPES.len());
+    }
+
+    #[test]
+    fn what_a_token_answer_leaves_out_is_named() {
+        assert!(
+            not_granted(None).is_empty(),
+            "no scope grants what was asked"
+        );
+        assert!(not_granted(Some(" ")).is_empty());
+        assert_eq!(
+            not_granted(Some("openid fhirUser launch/patient offline_access")).len(),
+            PATIENT_TYPES.len()
+        );
+        let all_but_two = PATIENT_TYPES
+            .iter()
+            .filter(|t| !matches!(**t, "Coverage" | "Specimen"))
+            .map(|t| format!("patient/{t}.read"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(not_granted(Some(&all_but_two)), ["Coverage", "Specimen"]);
     }
 
     #[test]

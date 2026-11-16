@@ -149,9 +149,18 @@ a caregiver's sign-in.
   `launch/patient` are not in the editor. The SMART configuration lists both
   `permission-v1` and `permission-v2`.
 - athena asks for `patient/<Type>.rs` (SMART v2), the spelling the editor
-  grants for every type it reads. `granted_types` reads v1 and v2 spellings,
-  category narrowings included. **Unverified** until the sandbox sign-in:
-  that a v2 request is granted in full.
+  grants for every type it reads; `athena config set scope-version v1` asks
+  `patient/<Type>.read` instead, for an app registered with SMART V1 scopes
+  only. `granted_types` reads v1 and v2 spellings, category narrowings
+  included. **Unverified** until the sandbox sign-in: that a v2 request is
+  granted in full.
+- After the code exchange, athena compares the token answer's `scope` with
+  what it asked for. An answer that grants no read scope is refused (exit 3):
+  the sign-in is not stored, its tokens are revoked, and the remedy names the
+  registration step and `scope-version`. A partial grant is stored with a
+  warning, and `auth login --json` lists the rest as `types_not_granted`;
+  each export reports them as `forbidden` skips. A token answer without
+  `scope` grants what was asked (RFC 6749 §5.1).
 - athenahealth's authorize endpoint judges scopes only after the sign-in.
   An unauthenticated `GET /oauth2/v1/authorize` (2026-11-16) reached its
   Login page for every scope set tried: v1 for 26 types, v1 for 21, v2 for

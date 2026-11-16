@@ -59,6 +59,17 @@ it to set a password and a phone for sign-in codes.
    editor: athenahealth approves them for every 3-legged app
    ([docs/api.md](api.md#scopes)).
 
+### An app registered before athena 0.3.3
+
+The steps before athena 0.3.3 asked for `patient/<Type>.read` scopes (FHIR R4
+SMART V1), and athena asked in that spelling. From 0.3.3 it asks for
+`patient/<Type>.rs` (SMART V2). Add the SMART V2 scopes of step 5 to the app
+before signing in again. Until then, `athena config set scope-version v1`
+keeps the old request. A sign-in that is granted no read scope is refused
+and not stored; one granted only some prints the types left out, and each
+export reports those as `forbidden` skips. A sign-in already stored keeps
+the scope it was granted when it renews.
+
 ## 3. A Production app
 
 Repeat step 2 with Environment **Production**. If the name is refused as a
