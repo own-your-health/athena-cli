@@ -12,6 +12,8 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use pk_cli_core::{CliError, RangeArgs, Reason};
 use pk_cli_documents::{fs_safe, Document, SKIP_NO_FILE, SKIP_UPSTREAM, SKIP_VERIFY_FAILED};
+use pk_med_fhir::is_id;
+#[cfg(test)]
 use pk_med_fhir::MAX_ID_LEN;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -185,12 +187,7 @@ pub fn parse_id(id: &str) -> Result<(String, usize), CliError> {
     };
     let (resource_type, rid) = reference.split_once('/').ok_or_else(|| bad_id(id))?;
     let ok_type = matches!(resource_type, "DocumentReference" | "DiagnosticReport");
-    let ok_id = !rid.is_empty()
-        && rid.len() <= MAX_ID_LEN
-        && !rid.chars().all(|c| c == '.')
-        && rid
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
+    let ok_id = is_id(rid);
     if !(ok_type && ok_id) {
         return Err(bad_id(id));
     }
@@ -252,7 +249,7 @@ pub fn fetch(client: &Client, item: &Item) -> Result<Fetched, FetchError> {
     let (data, content_type) = match &item.source {
         Source::Inline(data) => (data.clone(), item.content_type.clone()),
         Source::Url(url) => {
-            if binary_id(url, client.base()).is_none() {
+            let Some(id) = binary_id(url, client.base()) else {
                 return Err(FetchError {
                     code: SKIP_NO_FILE,
                     error: CliError::NotFound(
@@ -261,12 +258,16 @@ pub fn fetch(client: &Client, item: &Item) -> Result<Fetched, FetchError> {
                             .into(),
                     ),
                 });
+            };
+            if !is_id(&id) {
+                return Err(FetchError {
+                    code: SKIP_VERIFY_FAILED,
+                    error: crate::export::not_an_id("Binary"),
+                });
             }
-            // A usage error is pk_med_fhir refusing the server's id.
             let binary = client.binary(url).map_err(|error| FetchError {
                 code: match (error.base(), error.reason()) {
                     (CliError::NotFound(_), _) | (_, Some(Reason::Forbidden)) => SKIP_NO_FILE,
-                    (CliError::Usage(_), _) => SKIP_VERIFY_FAILED,
                     _ => SKIP_UPSTREAM,
                 },
                 error,

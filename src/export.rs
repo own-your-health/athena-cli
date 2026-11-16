@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::fhir::{self, Client};
 use crate::http::same_origin;
 use crate::smart::{granted_types, PATIENT_TYPES};
-use pk_med_fhir::RawResource;
+use pk_med_fhir::{is_id, RawResource, MAX_ID_LEN};
 use pk_med_records::dto::RecordsExport;
 use pk_med_records::export::ExportFile;
 
@@ -211,6 +211,10 @@ pub fn export<W: Write>(
         let Some((resource_type, id)) = reference.split_once('/') else {
             continue;
         };
+        if !is_id(id) {
+            skip_not_an_id(w, resource_type, id);
+            continue;
+        }
         if w.written(resource_type, id) {
             continue;
         }
@@ -275,6 +279,10 @@ fn fetch_binary<W: Write>(
         });
         return Ok(());
     };
+    if !is_id(&id) {
+        skip_not_an_id(w, "Binary", &id);
+        return Ok(());
+    }
     if w.written("Binary", &id) {
         return Ok(());
     }
@@ -297,6 +305,25 @@ fn fetch_binary<W: Write>(
     Ok(())
 }
 
+/// Why an id a server named is not read: outside `pk_med_fhir::is_id`, the
+/// rule `FhirClient` would refuse it by.
+pub fn not_an_id(resource_type: &str) -> CliError {
+    CliError::Upstream(format!(
+        "the server named a {resource_type} id that is not a FHIR id (1 to {MAX_ID_LEN} of \
+         A-Z a-z 0-9 - ., not only dots), so it was not read"
+    ))
+}
+
+fn skip_not_an_id<W: Write>(w: &mut Writer<W>, resource_type: &str, id: &str) {
+    w.skip(Skip {
+        resource_type: Some(resource_type.into()),
+        id: Some(id.into()),
+        search: None,
+        reason: not_an_id(resource_type).message().to_string(),
+        code: code::VERIFY_FAILED.into(),
+    });
+}
+
 /// Record a per-item failure as a skip; return the ones that end the stream.
 fn skip_or_fail<W: Write>(
     w: &mut Writer<W>,
@@ -310,9 +337,6 @@ fn skip_or_fail<W: Write>(
         (_, Some(Reason::Forbidden)) => code::FORBIDDEN,
         (CliError::NotFound(_), _) => code::NOT_FOUND,
         (_, Some(Reason::BadRequest)) => code::UNSUPPORTED,
-        // pk_med_fhir refused an id the server named (not a FHIR id, or over
-        // `MAX_ID_LEN`) before sending anything: that one item is skipped.
-        (CliError::Usage(_), _) if id.is_some() => code::VERIFY_FAILED,
         (CliError::Upstream(_), _) if tripped => {
             return Err(CliError::Upstream(format!(
                 "{} requests in a row failed, so the export stopped: {}",

@@ -16,8 +16,9 @@
 //! cancelled), `nonce` (the ID token carries another sign-in's nonce),
 //! `down` (FHIR answers 503), `page2-down` (Observation's second page answers
 //! 503), `long-ids` (an Encounter refers to a Practitioner by a 100-character
-//! id, which reads, and a Location by a 300-character one), `forbidden` (FHIR
-//! answers 403).
+//! id, which reads, and a Location by a 300-character one; the one
+//! DocumentReference's file is a Binary with a 300-character id), `forbidden`
+//! (FHIR answers 403).
 
 #![allow(dead_code)]
 
@@ -54,6 +55,7 @@ fn fixture(path: &str) -> Option<&'static str> {
         "Condition-malformed" => fixture!("search-Condition-malformed.json"),
         "Encounter" => fixture!("search-Encounter.json"),
         "Encounter-long-ids" => fixture!("search-Encounter-long-ids.json"),
+        "DocumentReference-long-ids" => fixture!("search-DocumentReference-long-ids.json"),
         "Practitioner-long-id" => fixture!("practitioner-long-id.json"),
         "Observation" => fixture!("search-Observation.json"),
         "Observation-page2" => fixture!("search-Observation-page2.json"),
@@ -434,6 +436,9 @@ impl Mock {
             "Condition" if malformed => serve(fixture("Condition-malformed").unwrap()),
             "ServiceRequest" => fhir_json(400, fixture("outcome-unsupported").unwrap()),
             "Encounter" if long_ids => serve(fixture("Encounter-long-ids").unwrap()),
+            "DocumentReference" if long_ids => {
+                serve(fixture("DocumentReference-long-ids").unwrap())
+            }
             "Observation" if q.get("cursor").map(String::as_str) == Some("2") && page2_down => fhir_json(503, "Service Unavailable"),
             "Observation" if q.get("cursor").map(String::as_str) == Some("2") => serve(fixture("Observation-page2").unwrap()),
             t => match fixture(t) {

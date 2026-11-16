@@ -75,7 +75,7 @@ and chart sharing group ID(s) for that organization." ([FHIR Base URLs][base])
 
 ## Sign-in: SMART standalone patient launch
 
-athena signs in through medical-common's `pk_med_smart` (v0.4.3):
+athena signs in through medical-common's `pk_med_smart` (v0.4.4):
 `discover` reads `.well-known/smart-configuration` (and checks that an https
 server names only https endpoints), `begin` binds the redirect listener and
 builds the authorize URL with PKCE S256, state, `aud` and a nonce, and
@@ -235,12 +235,14 @@ CareTeam, Goal, Device, Coverage, RelatedPerson; then `Patient/<id>` by read,
 and Practitioner, Organization, Location, Medication and Media by read when an
 exported resource refers to them.
 
-Ids. FHIR R4 allows 1 to 64 of `A-Z a-z 0-9 - .`. athena accepts the same
-characters at up to `pk_med_fhir::MAX_ID_LEN` (256, medical-common v0.4.3),
-in reads, the patient id a sign-in names and `documents download`'s ids. Epic
-issues ids past 64, and athenahealth publishes no bound. **Unverified**:
-whether athenahealth issues any past 64. A server's reference to an id the
-client refuses is a `verify_failed` skip, and nothing is sent for it.
+Ids. FHIR R4 allows 1 to 64 of `A-Z a-z 0-9 - .`. athena applies
+`pk_med_fhir::is_id`, the rule `FhirClient`'s reads apply: the same
+characters, not only dots, at up to `pk_med_fhir::MAX_ID_LEN` (256), to the
+patient id a sign-in names, to `documents download`'s ids and to every id a
+server's answer names before athena reads it. Epic issues ids past 64, and
+athenahealth publishes no bound. **Unverified**: whether athenahealth issues
+any past 64. A reference or attachment naming an id outside the rule is a
+`verify_failed` skip, and nothing is sent for it.
 
 ### Documents and Binary
 
