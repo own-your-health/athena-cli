@@ -75,7 +75,7 @@ and chart sharing group ID(s) for that organization." ([FHIR Base URLs][base])
 
 ## Sign-in: SMART standalone patient launch
 
-athena signs in through medical-common's `pk_med_smart` (v0.4.4):
+athena signs in through medical-common's `pk_med_smart` (v0.4.5):
 `discover` reads `.well-known/smart-configuration` (and checks that an https
 server names only https endpoints), `begin` binds the redirect listener and
 builds the authorize URL with PKCE S256, state, `aud` and a nonce, and
@@ -140,6 +140,24 @@ a caregiver's sign-in.
   Overview][authz]), and, for "patient-facing apps using 3-legged OAuth ... for
   use with the standalone SMART App Launch sequence", `launch/patient` and
   `patient/<Type>.read` for each listed type.
+- The Developer Portal's scope editor (2026-11-16) has products athenaOne,
+  Event Notifications, FHIR DSTU2, FHIR R4 SMART V1 and FHIR R4 SMART V2.
+  SMART V1 offers `patient/<Type>.read` for 21 types, without Coverage,
+  Media, MedicationDispense, RelatedPerson and Specimen. SMART V2 offers `.r`
+  and `.s` for all 26 of `PATIENT_TYPES`, and granting them adds `.rs` and
+  category-limited Condition and Observation scopes. The OpenID scopes and
+  `launch/patient` are not in the editor. The SMART configuration lists both
+  `permission-v1` and `permission-v2`.
+- athena asks for `patient/<Type>.rs` (SMART v2), the spelling the editor
+  grants for every type it reads. `granted_types` reads v1 and v2 spellings,
+  category narrowings included. **Unverified** until the sandbox sign-in:
+  that a v2 request is granted in full.
+- athenahealth's authorize endpoint judges scopes only after the sign-in.
+  An unauthenticated `GET /oauth2/v1/authorize` (2026-11-16) reached its
+  Login page for every scope set tried: v1 for 26 types, v1 for 21, v2 for
+  26, the base four alone, and a set with a scope that does not exist. A
+  scope the app was not granted can therefore show only after the person
+  signs in.
 - "By default, athenahealth does not permit apps to request wildcard scopes
   ... nor does athenahealth permit write scopes" ([Authorization
   Overview][authz]). athena names every type: `src/smart.rs`, `PATIENT_TYPES`.

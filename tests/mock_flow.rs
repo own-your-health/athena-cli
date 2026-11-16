@@ -175,7 +175,7 @@ fn a_caregiver_sign_in_gets_tokens_for_the_chosen_patient() {
         .scope
         .as_deref()
         .unwrap()
-        .contains("patient/DocumentReference.read"));
+        .contains("patient/DocumentReference.rs"));
     // expires_in came as the string "3600".
     assert!(tokens.tokens.expires_at.unwrap() > now() + 3000);
     assert_eq!(
@@ -314,7 +314,7 @@ fn an_expired_token_is_renewed_once_with_the_granted_scope() {
         .expect("read after renewal");
     assert_eq!(m.refresh_grants(), 1);
     let scope = &m.refresh_scopes()[0];
-    assert!(scope.contains("launch/patient") && scope.contains("patient/Patient.read"));
+    assert!(scope.contains("launch/patient") && scope.contains("patient/Patient.rs"));
     let stored = stored(&store);
     assert_ne!(stored.tokens.access_token, tokens.tokens.access_token);
     assert_eq!(

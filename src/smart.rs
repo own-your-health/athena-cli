@@ -25,7 +25,8 @@ impl VendorQuirks for Athenahealth {}
 /// The resource types athena asks to read: athenahealth's list of
 /// auto-approved patient scopes for a standalone launch, less the DSTU2-only
 /// and proprietary names. athenahealth refuses wildcard scopes, so each is
-/// named.
+/// named. Its scope editor offers all of them under FHIR R4 SMART V2; SMART
+/// V1 lacks Coverage, Media, MedicationDispense, RelatedPerson and Specimen.
 pub const PATIENT_TYPES: &[&str] = &[
     "AllergyIntolerance",
     "Binary",
@@ -56,10 +57,11 @@ pub const PATIENT_TYPES: &[&str] = &[
 ];
 
 /// The scopes of a standalone patient sign-in: OpenID Connect, the patient
-/// picker, a refresh token, and read access per type in SMART v1 spelling
-/// (`patient/<Type>.read`), the one athenahealth's auto-approved list uses.
+/// picker, a refresh token, and read and search per type in SMART v2
+/// spelling (`patient/<Type>.rs`), the product in athenahealth's scope
+/// editor that offers every type athena reads (`docs/registration.md`).
 pub fn scopes() -> ScopeSet {
-    ScopeSet::standalone_patient().read_types(ScopeVersion::V1, PATIENT_TYPES)
+    ScopeSet::standalone_patient().read_types(ScopeVersion::V2, PATIENT_TYPES)
 }
 
 /// The resource types a granted scope string allows reading, in SMART v1
@@ -116,8 +118,10 @@ mod tests {
     fn the_scope_names_every_type_and_no_wildcard() {
         let scope = scopes().to_string();
         assert!(scope.starts_with("openid fhirUser launch/patient offline_access "));
-        assert!(scope.contains("patient/DocumentReference.read"));
-        assert!(scope.contains("patient/Binary.read"));
+        assert!(scope.contains("patient/DocumentReference.rs"));
+        assert!(scope.contains("patient/Binary.rs"));
+        assert!(!scope.contains(".read"), "SMART v2 only: {scope}");
+        assert_eq!(granted_types(&scope).len(), PATIENT_TYPES.len());
         assert!(!scope.contains('*'));
         assert_eq!(scope.split(' ').count(), 4 + PATIENT_TYPES.len());
     }

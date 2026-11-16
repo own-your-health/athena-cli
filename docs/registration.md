@@ -20,7 +20,8 @@ it to set a password and a phone for sign-in codes.
 
 1. Choose **(+) Create a New App**.
 2. Choose **My app will use Certified APIs ONLY**, then the category **3-Legged
-   OAuth for PHR Apps**, then **Continue to App Details**.
+   OAuth for Patients**, tick **I confirm that I am building a PHR app**, then
+   choose **Continue to App Details**.
 3. Fill in the form:
 
    | Field | Value |
@@ -29,16 +30,16 @@ it to set a password and a phone for sign-in codes.
    | App name | Your own brand plus what it does, such as "<Family name> Health Records". athenahealth's [naming guidelines][naming] refuse "athena", "athenahealth", "app", "application", "PHR", "CAPI", "test", environment words and people's names. |
    | Website | Your copy of athena, or <https://github.com/piekstra/athena-cli> |
    | Description | Command-line tool with which a patient or caregiver downloads their own records from athenahealth practices to their own computer. |
-   | Intended end users | Patients |
+   | Intended end users | The patient and approved family members or caregivers (a caregiver signs in for a child) |
    | OAuth client type | Public (native) |
    | Token authentication | PKCE, no client secret |
    | Redirect URLs | `http://127.0.0.1:47816/callback` and `http://127.0.0.1:47817/callback` |
 
 4. Read the linked terms ([summary](api.md#the-terms-a-registration-agrees-to)),
    tick the box and choose **Create Application**. Copy the client id.
-5. On the app's **Scopes** tab select `openid`, `fhirUser`, `offline_access`,
-   `launch/patient` and `patient/<Type>.read` for each of these types, then
-   choose **Confirm Scopes**:
+5. On the app's **Scopes** tab, open the product **FHIR R4 SMART V2** and
+   tick read (`.r`) and search (`.s`) for each of these types, then choose
+   **Confirm Scopes**:
 
    AllergyIntolerance, Binary, CarePlan, CareTeam, Condition, Coverage,
    Device, DiagnosticReport, DocumentReference, Encounter, Goal, Immunization,
@@ -46,9 +47,17 @@ it to set a password and a phone for sign-in codes.
    Observation, Organization, Patient, Practitioner, Procedure, Provenance,
    RelatedPerson, ServiceRequest, Specimen.
 
-   athena asks for exactly these (`src/smart.rs`, `PATIENT_TYPES`).
-   athenahealth approves them on the spot. A type you leave out is reported
-   as a `forbidden` skip in each export.
+   athenahealth adds `patient/<Type>.rs` and category-limited Condition and
+   Observation scopes on its own. athena asks for `patient/<Type>.rs` for
+   exactly these types (`src/smart.rs`, `PATIENT_TYPES`). A type you leave
+   out is reported as a `forbidden` skip in each export.
+
+   The editor also lists athenaOne, Event Notifications, FHIR DSTU2 and FHIR
+   R4 SMART V1; athena needs none of them. SMART V1 offers only 21 of the
+   types (no Coverage, Media, MedicationDispense, RelatedPerson or Specimen).
+   `openid`, `fhirUser`, `offline_access` and `launch/patient` are not in the
+   editor: athenahealth approves them for every 3-legged app
+   ([docs/api.md](api.md#scopes)).
 
 ## 3. A Production app
 

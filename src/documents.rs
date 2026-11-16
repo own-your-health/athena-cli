@@ -12,7 +12,7 @@ use base64::engine::general_purpose::STANDARD;
 use base64::Engine as _;
 use pk_cli_core::{CliError, RangeArgs, Reason};
 use pk_cli_documents::{fs_safe, Document, SKIP_NO_FILE, SKIP_UPSTREAM, SKIP_VERIFY_FAILED};
-use pk_med_fhir::{is_id, MAX_ID_LEN};
+use pk_med_fhir::{is_id, ReferenceTarget, MAX_ID_LEN};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -183,10 +183,14 @@ pub fn parse_id(id: &str) -> Result<(String, usize), CliError> {
         }
         None => (id, 0),
     };
-    let (resource_type, rid) = reference.split_once('/').ok_or_else(|| bad_id(id))?;
-    let ok_type = matches!(resource_type, "DocumentReference" | "DiagnosticReport");
-    let ok_id = is_id(rid);
-    if !(ok_type && ok_id) {
+    // A relative `Type/id`, as `documents list` names it: no base, no
+    // `_history` version.
+    let ok = ReferenceTarget::parse(reference).is_some_and(|t| {
+        t.base.is_none()
+            && t.version.is_none()
+            && matches!(t.resource_type, "DocumentReference" | "DiagnosticReport")
+    });
+    if !ok {
         return Err(bad_id(id));
     }
     Ok((reference.to_string(), n))
@@ -503,6 +507,8 @@ mod tests {
             "DocumentReference/d#0",
             "DocumentReference/../x",
             "DocumentReference/..",
+            "DocumentReference/d-1/_history/2",
+            "https://fhir.example.test/r4/DocumentReference/d-1",
             "d-1",
         ] {
             assert_eq!(parse_id(bad).unwrap_err().exit_code(), 2, "{bad}");
