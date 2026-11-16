@@ -26,6 +26,9 @@ pub struct Config {
     /// Loopback ports registered as redirect URIs, tried in order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redirect_ports: Option<Vec<u16>>,
+    /// The SMART scope spelling a sign-in asks in; v2 when unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_version: Option<ScopeSpelling>,
     /// The app's client id in each environment. Not a secret, but athenahealth's
     /// terms call it a key that is not to be shared, so it is configuration, never
     /// code.
@@ -234,10 +237,42 @@ impl Config {
         })
     }
 
+    pub fn scope_version(&self) -> ScopeSpelling {
+        self.scope_version.unwrap_or_default()
+    }
+
     pub fn redirect_ports(&self) -> Vec<u16> {
         match &self.redirect_ports {
             Some(ports) if !ports.is_empty() => ports.clone(),
             _ => DEFAULT_REDIRECT_PORTS.to_vec(),
+        }
+    }
+}
+
+/// The SMART scope spelling `auth login` asks in. `v2` (`patient/<Type>.rs`)
+/// is the product athenahealth's scope editor offers every type under; `v1`
+/// (`patient/<Type>.read`) is for an app registered with SMART V1 scopes
+/// only (`docs/registration.md`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, clap::ValueEnum)]
+#[serde(rename_all = "lowercase")]
+pub enum ScopeSpelling {
+    V1,
+    #[default]
+    V2,
+}
+
+impl ScopeSpelling {
+    pub fn version(self) -> pk_med_smart::ScopeVersion {
+        match self {
+            ScopeSpelling::V1 => pk_med_smart::ScopeVersion::V1,
+            ScopeSpelling::V2 => pk_med_smart::ScopeVersion::V2,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ScopeSpelling::V1 => "v1",
+            ScopeSpelling::V2 => "v2",
         }
     }
 }

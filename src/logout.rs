@@ -112,7 +112,7 @@ pub fn sign_out(
 }
 
 /// Revoke the refresh and access tokens, best effort.
-fn revoke_all(http: &dyn Http, stored: &SmartSession) -> bool {
+pub(crate) fn revoke_all(http: &dyn Http, stored: &SmartSession) -> bool {
     let Some(endpoint) = session::revocation_endpoint(stored) else {
         return false;
     };

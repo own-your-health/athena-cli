@@ -211,6 +211,7 @@ fn usage_errors_are_exit_2_with_a_json_error() {
         vec!["auth", "login", "--org", "sandbox", "--timeout", "0"],
         vec!["records", "export", "--ndjson", "-o", "dir"],
         vec!["documents", "download", "-o", "dir"],
+        vec!["config", "set", "scope-version", "v3"],
         vec!["no-such-command"],
     ] {
         let (code, _, _) = run(&home, &args);
@@ -313,6 +314,9 @@ fn config_round_trips_and_stays_owner_only() {
         "preview",
     ]);
     ok(&["--json", "config", "set", "redirect-ports", "47816,47817"]);
+    ok(&["--json", "config", "set", "scope-version", "v1"]);
+    ok(&["--json", "config", "unset", "scope-version"]);
+    ok(&["--json", "config", "set", "scope-version", "v2"]);
     ok(&[
         "--json",
         "config",

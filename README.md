@@ -50,13 +50,13 @@ Release assets: `athena-<target>.tar.gz` and `.sha256` for
 |---|---|
 | `orgs refresh\|list\|search` | Practice profiles (`org-list/v1`), and athenahealth's directory of practices, downloaded on `refresh` (about 135 MB) and kept as names, places and ids. A search match's `id` is the directory's `<practice>-<brand>-<csg>` key; `--org` takes a profile's slug |
 | `config set\|unset practice <slug>` | A practice profile: environment, practice, brand and chart sharing group ids, or a FHIR base in full |
-| `auth login --org <ORG> [--label <WHO>]` | Standalone patient launch in the browser (PKCE, loopback); one sign-in per patient record |
+| `auth login --org <ORG> [--label <WHO>]` | Standalone patient launch in the browser (PKCE, loopback); one sign-in per patient record. It refuses a grant with no read scope and names the types a partial grant leaves out (`types_not_granted`) |
 | `auth status` / `auth logout` | Each sign-in's state (`auth-status/v1`); remove one or all |
 | `patients list [--org <ORG>]` | The patients signed in, each with `self` or `proxy` (`patient-list/v1`) |
 | `records export --patient <ID> [--since D] --ndjson` | Every resource the practice serves to the patient, files included, as `records-stream/v1` |
 | `documents list\|download` | Visit notes, reports and results' forms (`documents/v1`) |
 | `api GET <path>` | One FHIR read as the signed-in patient |
-| `config path\|show\|set\|unset` | Client ids, redirect ports, practice profiles |
+| `config path\|show\|set\|unset` | Client ids, redirect ports, the scope version (`v2`, or `v1` for an app registered with SMART V1 scopes only), practice profiles |
 | `info`, `completions`, `self-update` | Family standard |
 
 Every command takes `--json`. Exit codes: 0 ok, 2 usage, 3 sign-in needed

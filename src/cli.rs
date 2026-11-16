@@ -154,6 +154,12 @@ pub enum SetCmd {
         #[arg(value_name = "PORTS")]
         ports: String,
     },
+    /// The SMART scope spelling sign-ins ask in: v2 (default, patient/<Type>.rs), or v1
+    /// (patient/<Type>.read) for an app registered with SMART V1 scopes only.
+    ScopeVersion {
+        #[arg(value_enum, value_name = "VERSION")]
+        version: config::ScopeSpelling,
+    },
     /// Add or change a practice profile.
     Practice(PracticeArgs),
 }
@@ -195,6 +201,7 @@ pub enum UnsetCmd {
         env: Environment,
     },
     RedirectPorts,
+    ScopeVersion,
     Practice {
         #[arg(value_name = "SLUG")]
         slug: String,
@@ -466,6 +473,7 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
             client_id: &client_id,
             ports: &ports,
             timeout: Duration::from_secs(args.timeout * 60),
+            scope_version: config.scope_version(),
         },
     )?;
     let url = pending.start_url();
@@ -478,6 +486,15 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
         }
     }
     let outcome = pending.finish(&http, unix_secs())?;
+    let not_granted = outcome.not_granted;
+    if !not_granted.is_empty() {
+        eprintln!(
+            "warning: athenahealth did not grant reading {}; each export reports them as \
+             forbidden skips. To fix it, {}",
+            not_granted.join(", "),
+            login::scope_remedy(&args.org, config.scope_version())
+        );
+    }
     let signed_in = outcome.session;
     let patient = signed_in.patient.clone().unwrap_or_default();
     let store = session::keychain();
@@ -540,6 +557,7 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
             map.insert("relationship".into(), json!(rel));
         }
         map.insert("signin_expires_at".into(), json!(entry.signin_expires_at));
+        map.insert("types_not_granted".into(), json!(not_granted));
     }
     if ctx.json {
         output::json(&value);
@@ -785,6 +803,10 @@ fn config_cmd(ctx: &Ctx, cmd: ConfigCmd) -> Result<(), CliError> {
                     config.redirect_ports = Some(config::parse_ports(&ports)?);
                     "redirect ports".to_string()
                 }
+                SetCmd::ScopeVersion { version } => {
+                    config.scope_version = Some(version);
+                    "scope version".to_string()
+                }
                 SetCmd::Practice(args) => {
                     config::validate_slug(&args.slug)?;
                     let mut practice =
@@ -842,6 +864,10 @@ fn config_cmd(ctx: &Ctx, cmd: ConfigCmd) -> Result<(), CliError> {
                 UnsetCmd::RedirectPorts => {
                     config.redirect_ports = None;
                     "redirect ports".to_string()
+                }
+                UnsetCmd::ScopeVersion => {
+                    config.scope_version = None;
+                    "scope version".to_string()
                 }
                 UnsetCmd::Practice { slug } => {
                     config::validate_slug(&slug)?;
