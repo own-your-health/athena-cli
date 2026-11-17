@@ -136,6 +136,14 @@ token's `fhirUser`: the patient's own `Patient/<id>` is `self`, anything else
 (a `RelatedPerson`) is `proxy`. **Unverified**: athenahealth's `fhirUser` for
 a caregiver's sign-in.
 
+The choice is made on athenahealth's side, after its login: a page on
+`myidentity-support.platform.athenahealth.com` reads "Select a health record
+... Your account is linked to the following health records", listing the
+account's own record marked "(you)" and, for a caregiver, the records it may
+open for others. It can add "Could not confirm access to additional health
+records. Please check again later." (seen 2026-11-16 for the sandbox's test
+patient). Choosing a record continues to the consent page.
+
 ### Scopes
 
 - "athenahealth automatically approves all 3-legged OAuth apps for the
@@ -156,7 +164,10 @@ a caregiver's sign-in.
   `patient/<Type>.read` instead, for an app registered with SMART V1 scopes
   only. `granted_types` reads v1 and v2 spellings, category narrowings
   included. **Unverified** until the sandbox sign-in: that a v2 request is
-  granted in full.
+  granted in full. The consent page ("<app name> is asking to access parts of
+  your medical record") listed 37 permissions on 2026-11-16, all ticked, the
+  five SMART-v2-only types among them and "Have offline access" last, under
+  one "Allow Access" button. What is granted is read from the token answer.
 - After the code exchange, athena compares the token answer's `scope` with
   what it asked for. An answer that grants no read scope is refused (exit 3):
   the sign-in is not stored, its tokens are revoked, and the remedy names the
@@ -200,7 +211,10 @@ cli-common's redirect listener (on 47816 or 47817) answers only `/callback`.
 It answers `GET /` with its own `Host` only, and stops when the sign-in ends.
 That listener's last page is cli-common's ("signed in", or "the sign-in did
 not complete"), and a cancelled sign-in is exit 3 with "the provider refused
-the sign-in (access_denied…)".
+the sign-in (access_denied…)". The listener sends that page when the code
+arrives, before athena exchanges it, so "signed in" means athenahealth sent a
+code back, not that a sign-in was stored. The terminal's exit code and
+`auth status` say whether it was.
 
 ## Tokens
 
@@ -435,6 +449,7 @@ so the old profile is exported first, and kept while the old portal is.
 | `Appointment` search takes no `patient` parameter | Not exported |
 | `Media` has no search | Read through `DiagnosticReport.media` |
 | A 429 can mean the daily limit, where a retry only adds load | Retried only with a short `Retry-After` |
+| A new app's client id can be unknown to athenahealth's API gateway after Okta accepts it. Sign-in and consent work, then the token endpoint answers 401 `{"error":"InvalidClient","detailedmessage":"The provided client is not valid in the preview environment"}` (seen 2026-11-16, about an hour after the app was created). A token request with a made-up code tells the two apart: 401 `InvalidClient` while the gateway does not know the client, 400 `invalid_grant` once it does | Exit 5 with that message; nothing is stored. **Unverified**: that it clears by itself, and when |
 
 [r233]: https://docs.athenahealth.com/api/resources/233-release-developer-console-allows-self-service-onboarding-all-apps-using-only
 [r227]: https://docs.athenahealth.com/api/resources/227-release-updated-enable-authentication-against-multiple-athenaone-practices
