@@ -23,7 +23,13 @@
 //! drops Coverage), `withheld` (every page of the Observation and
 //! DocumentReference searches carries an OperationOutcome coded `suppressed`
 //! beside its results, as Epic sends for a sub-resource the client may not
-//! read).
+//! read), `pdp-401` (the RelatedPerson search answers 401 with athenahealth's
+//! "error calling the PDP service" outcome, while every other request works),
+//! `withdrawn` (the RelatedPerson search revokes every token, as a sign-in
+//! withdrawn mid-export, and answers 401).
+//!
+//! In every mode, a MedicationRequest search without `intent` answers 403 with
+//! athenahealth's "required parameter combinations" outcome.
 
 #![allow(dead_code)]
 
@@ -79,6 +85,9 @@ fn fixture(path: &str) -> Option<&'static str> {
         "outcome-unsupported" => fixture!("outcome-unsupported.json"),
         "outcome-expired" => fixture!("outcome-expired.json"),
         "outcome-suppressed" => fixture!("outcome-suppressed.json"),
+        "outcome-required-params" => fixture!("outcome-required-params.json"),
+        "outcome-pdp" => fixture!("outcome-pdp.json"),
+        "MedicationRequest" => fixture!("search-MedicationRequest.json"),
         _ => return None,
     })
 }
@@ -99,6 +108,8 @@ struct State {
     pub log: Vec<(String, String)>,
     refresh_grants: u32,
     refresh_scopes: Vec<String>,
+    /// the `intent` of each MedicationRequest search
+    intents: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -165,6 +176,11 @@ impl Mock {
 
     pub fn refresh_grants(&self) -> u32 {
         self.state.lock().unwrap().refresh_grants
+    }
+
+    /// The `intent` each MedicationRequest search sent, in order.
+    pub fn medication_request_intents(&self) -> Vec<String> {
+        self.state.lock().unwrap().intents.clone()
     }
 
     pub fn refresh_scopes(&self) -> Vec<String> {
@@ -417,6 +433,17 @@ impl Mock {
         let page2_down = s.mode == "page2-down";
         let long_ids = s.mode == "long-ids";
         let withheld = s.mode == "withheld";
+        let pdp_401 = s.mode == "pdp-401";
+        if path == "MedicationRequest" {
+            if let Some(intent) = q.get("intent") {
+                s.intents.push(intent.clone());
+            }
+        }
+        if s.mode == "withdrawn" && path == "RelatedPerson" {
+            s.access.clear();
+            s.refresh.clear();
+            return fhir_json(401, fixture("outcome-expired").unwrap());
+        }
         drop(s);
         let serve = |text: &str| fhir_json(200, &text.replace("{{BASE}}", &base));
         if !id.is_empty() {
@@ -449,6 +476,10 @@ impl Mock {
         }
         let found = match resource_type {
             "Goal" => fhir_json(403, fixture("outcome-forbidden").unwrap()),
+            "MedicationRequest" if !q.contains_key("intent") => {
+                fhir_json(403, fixture("outcome-required-params").unwrap())
+            }
+            "RelatedPerson" if pdp_401 => fhir_json(401, fixture("outcome-pdp").unwrap()),
             // An entry with no resourceType, then a good one.
             "Condition" if malformed => serve(fixture("Condition-malformed").unwrap()),
             "ServiceRequest" => fhir_json(400, fixture("outcome-unsupported").unwrap()),

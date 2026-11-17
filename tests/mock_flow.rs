@@ -417,6 +417,123 @@ fn a_revoked_sign_in_ends_the_stream_incomplete_with_exit_3() {
 }
 
 #[test]
+fn a_medication_request_search_names_every_intent() {
+    let m = Mock::start(0);
+    let http = BlockingTransport::new().unwrap();
+    let tokens = sign_in(&m, &http);
+    let store = Arc::new(MemoryStore::default());
+    let c = client(&http, &store, &tokens);
+    // athenahealth refuses a search by patient alone.
+    let alone = c
+        .search(
+            "MedicationRequest",
+            &[("patient", mock::PATIENT.to_string())],
+        )
+        .unwrap_err();
+    assert_eq!(alone.exit_code(), 3, "{alone}");
+    let (text, result) = pull(&c, &tokens);
+    result.unwrap();
+    // Every value of FHIR R4's MedicationRequest.intent, once each.
+    let sent = m.medication_request_intents();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let mut intents: Vec<&str> = sent[0].split(',').collect();
+    intents.sort_unstable();
+    assert_eq!(
+        intents,
+        [
+            "filler-order",
+            "instance-order",
+            "option",
+            "order",
+            "original-order",
+            "plan",
+            "proposal",
+            "reflex-order",
+        ]
+    );
+    let out = lines(&text);
+    assert_eq!(
+        out.iter()
+            .filter(|l| l["resourceType"] == "MedicationRequest")
+            .count(),
+        1
+    );
+    let trailer = out.last().unwrap();
+    assert!(
+        !trailer["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["resource_type"] == "MedicationRequest"),
+        "{trailer}"
+    );
+}
+
+#[test]
+fn a_401_for_one_search_while_the_patient_reads_is_a_forbidden_skip() {
+    let m = Mock::start(0);
+    let http = BlockingTransport::new().unwrap();
+    let tokens = sign_in(&m, &http);
+    let store = Arc::new(MemoryStore::default());
+    let c = client(&http, &store, &tokens);
+    let (normal, result) = pull(&c, &tokens);
+    result.unwrap();
+    let records = |text: &str| {
+        lines(text)
+            .iter()
+            .filter(|l| l.get("resourceType").is_some())
+            .count()
+    };
+    m.set_mode("pdp-401");
+    let grants = m.refresh_grants();
+    let (text, result) = pull(&c, &tokens);
+    result.expect("one refused search is no refused sign-in");
+    assert_eq!(records(&text), records(&normal), "everything else kept");
+    let out = lines(&text);
+    let trailer = out.last().unwrap();
+    assert_eq!(trailer["complete"], true);
+    let refused: Vec<&Value> = trailer["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["resource_type"] == "RelatedPerson")
+        .collect();
+    assert_eq!(refused.len(), 1, "{trailer}");
+    assert_eq!(refused[0]["code"], "forbidden");
+    assert_eq!(refused[0]["search"], "RelatedPerson");
+    let reason = refused[0]["reason"].as_str().unwrap();
+    assert!(reason.contains("PDP service"), "{reason}");
+    assert!(reason.contains("still reads the patient"), "{reason}");
+    // The client renewed once before it gave up on the search.
+    assert_eq!(m.refresh_grants(), grants + 1);
+    assert!(stored(&store).refused_at.is_none());
+}
+
+#[test]
+fn a_sign_in_withdrawn_mid_export_still_ends_it_with_exit_3() {
+    let m = Mock::start(0);
+    let http = BlockingTransport::new().unwrap();
+    let tokens = sign_in(&m, &http);
+    let store = Arc::new(MemoryStore::default());
+    let c = client(&http, &store, &tokens);
+    m.set_mode("withdrawn");
+    let (text, result) = pull(&c, &tokens);
+    let err = result.unwrap_err();
+    assert_eq!(err.exit_code(), 3, "{err}");
+    let out = lines(&text);
+    let trailer = out.last().unwrap();
+    assert_eq!(trailer["complete"], false);
+    assert!(
+        !trailer["skipped"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|s| s["resource_type"] == "RelatedPerson"),
+        "a withdrawn sign-in is no skip: {trailer}"
+    );
+}
+
+#[test]
 fn a_server_that_is_down_fails_the_export_after_retries() {
     let m = Mock::start(0);
     let http = BlockingTransport::new().unwrap();

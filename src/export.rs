@@ -40,6 +40,21 @@ pub const SEARCH_TYPES: &[&str] = &[
     "RelatedPerson",
 ];
 
+/// Every `MedicationRequest.intent`. athenahealth searches MedicationRequest
+/// only by `patient` together with `intent` (or by `_id`): its
+/// CapabilityStatement says so in `ah-search-parameter-metadata`, and a search
+/// by `patient` alone answers 403.
+pub const MEDICATION_REQUEST_INTENTS: &str =
+    "proposal,plan,order,original-order,reflex-order,filler-order,instance-order,option";
+
+/// What a type's search needs beside `patient`.
+fn required_params(resource_type: &str) -> Vec<(&'static str, String)> {
+    match resource_type {
+        "MedicationRequest" => vec![("intent", MEDICATION_REQUEST_INTENTS.to_string())],
+        _ => Vec::new(),
+    }
+}
+
 /// Read one by one when an exported resource refers to them. athenahealth
 /// serves `Media` by read only (no search), so a `DiagnosticReport.media`
 /// link is the way to it; its image follows it as a `Binary`.
@@ -122,11 +137,18 @@ pub fn export<W: Write>(
     }
 
     for resource_type in SEARCH_TYPES {
+        let mut params = required_params(resource_type);
+        if let Some(since) = since {
+            params.push(("_lastUpdated", format!("ge{since}")));
+        }
         // As records-stream/v1 asks: the search without the patient's id.
-        let search = match since {
-            Some(since) => format!("{resource_type}?_lastUpdated=ge{since}"),
-            None => resource_type.to_string(),
+        let search = if params.is_empty() {
+            resource_type.to_string()
+        } else {
+            let query: Vec<String> = params.iter().map(|(k, v)| format!("{k}={v}")).collect();
+            format!("{resource_type}?{}", query.join("&"))
         };
+        params.insert(0, ("patient", patient.clone()));
         if !granted.contains(*resource_type) {
             w.skip(Skip {
                 resource_type: Some(resource_type.to_string()),
@@ -136,10 +158,6 @@ pub fn export<W: Write>(
                 code: code::FORBIDDEN.into(),
             });
             continue;
-        }
-        let mut params = vec![("patient", patient.clone())];
-        if let Some(since) = since {
-            params.push(("_lastUpdated", format!("ge{since}")));
         }
         // Each page is written as it is read, its Binary documents after
         // their parents, so a page that fails keeps the ones before it. What
@@ -201,14 +219,7 @@ pub fn export<W: Write>(
                     });
                 }
             }
-            Err(e) => skip_or_fail(
-                w,
-                e,
-                Some(resource_type),
-                None,
-                Some(search),
-                client.tripped(),
-            )?,
+            Err(e) => skip_or_fail(client, w, e, Some(resource_type), None, Some(search))?,
         }
     }
 
@@ -238,7 +249,7 @@ pub fn export<W: Write>(
                 let mut more = BTreeSet::new();
                 write_resource(client, w, &resource, &mut more, binary_granted)?;
             }
-            Err(e) => skip_or_fail(w, e, Some(resource_type), Some(id), None, client.tripped())?,
+            Err(e) => skip_or_fail(client, w, e, Some(resource_type), Some(id), None)?,
         }
     }
     Ok(())
@@ -305,7 +316,7 @@ fn fetch_binary<W: Write>(
         Ok(binary) => {
             w.resource(&binary)?;
         }
-        Err(e) => skip_or_fail(w, e, Some("Binary"), Some(&id), None, client.tripped())?,
+        Err(e) => skip_or_fail(client, w, e, Some("Binary"), Some(&id), None)?,
     }
     Ok(())
 }
@@ -331,15 +342,30 @@ fn skip_not_an_id<W: Write>(w: &mut Writer<W>, resource_type: &str, id: &str) {
 
 /// Record a per-item failure as a skip; return the ones that end the stream.
 fn skip_or_fail<W: Write>(
+    client: &Client,
     w: &mut Writer<W>,
     error: CliError,
     resource_type: Option<&str>,
     id: Option<&str>,
     search: Option<String>,
-    tripped: bool,
 ) -> Result<(), CliError> {
+    let tripped = client.tripped();
     let code = match (error.base(), error.reason()) {
         (_, Some(Reason::Forbidden)) => code::FORBIDDEN,
+        (_, Some(Reason::CredentialRefused)) if refused_alone(client) => {
+            w.skip(Skip {
+                resource_type: resource_type.map(Into::into),
+                id: id.map(Into::into),
+                search,
+                reason: format!(
+                    "{}; the same sign-in still reads the patient, so only this request was \
+                     refused",
+                    error.message()
+                ),
+                code: code::FORBIDDEN.into(),
+            });
+            return Ok(());
+        }
         (CliError::NotFound(_), _) => code::NOT_FOUND,
         (_, Some(Reason::BadRequest)) => code::UNSUPPORTED,
         (CliError::Upstream(_), _) if tripped => {
@@ -361,6 +387,15 @@ fn skip_or_fail<W: Write>(
         code: code.into(),
     });
     Ok(())
+}
+
+/// Whether a 401 that the client's renewal did not cure belongs to one
+/// request rather than the sign-in: the same sign-in still reads the patient.
+/// athenahealth answers its RelatedPerson search with a 401 ("An error
+/// occurred while calling the PDP service") to a sign-in that reads
+/// everything else; a sign-in that was withdrawn fails this read too.
+fn refused_alone(client: &Client) -> bool {
+    client.read("Patient", client.patient()).is_ok()
 }
 
 /// `Binary/<id>` from an attachment URL, relative or on the FHIR server's

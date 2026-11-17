@@ -1,0 +1,10 @@
+{
+  "resourceType": "OperationOutcome",
+  "issue": [
+    {
+      "severity": "error",
+      "code": "processing",
+      "diagnostics": "Synthetic: An error occurred while calling the PDP service (PDP status code: 400 BAD_REQUEST)"
+    }
+  ]
+}
