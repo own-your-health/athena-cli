@@ -17,8 +17,8 @@ from [cli-common](https://github.com/piekstra/cli-common).
 | `src/smart.rs` | athenahealth's `VendorQuirks` (none beyond the defaults), the scopes, granted types, `self` or `proxy` |
 | `src/oauth.rs` | token revocation for `auth logout` |
 | `src/logout.rs` | `auth logout` for one patient: revoke and delete its sign-in and a v0.2.x item (`LegacyItems` is the test seam) |
-| `src/login.rs` | one sign-in through `pk_med_smart` (discover, begin, exchange), and the "Log in with athenahealth" start page on a loopback port of its own |
-| `src/session.rs` | the Keychain store of `SmartSession`s (account `smart/<profile>/<patient>`), the 90-day horizon, and the session index (`sessions.json`) |
+| `src/login.rs` | one sign-in through `pk_med_smart` (discover, begin, exchange), the "Log in with athenahealth" start page on a loopback port of its own, and storing a sign-in that replaces another (`store_replacing`, which revokes the old one) |
+| `src/session.rs` | each profile's `SmartSession`s in athena's vault (entry `<profile>/<org>/<patient>`), the login fingerprint, the 90-day horizon, and the session index (`sessions.json`, one entry per profile, org and patient) |
 | `src/fhir.rs` | the read client: `pk_med_fhir::FhirClient` with athenahealth's `RetryPolicy`, the `Live` bearer source renewing through `pk_med_smart::Renewer`, and the circuit breaker |
 | `src/export.rs` | the export plan: searches, referenced reads, `Binary` after its parent, skips |
 | `src/stream.rs` | `pk-med-records`' `records-stream/v1` writer and DTOs, re-exported, and athena's header |
@@ -27,11 +27,15 @@ from [cli-common](https://github.com/piekstra/cli-common).
 | `tests/support/mock.rs` | a mock athenahealth practice on 127.0.0.1 (also `make mock`) |
 | `docs/api.md` | athenahealth's behaviour and traps, quoted; read before changing sign-in or export |
 
-medical-common is pinned at v0.5.0, on the same cli-common tag (v0.32.0).
+medical-common is pinned at v0.6.0, on the same cli-common tag (v0.33.0).
 From `pk-med-smart`: discovery, the scope set, the launch (`begin`, with the
-OpenID nonce) and the code exchange, `SmartSession` and its Keychain store,
-and `Renewer`, which renews under the refresh lock and stamps a refused
-grant as `refused_at`. From `pk-med-fhir`: `FhirClient` (retries, the bearer
+OpenID nonce) and the code exchange, `SmartSession`, `ProfileSessions` (a
+profile's sessions in the vault) and `migrate_sessions`, `SignInWindow`
+(feature `browser`: the profile's own Chrome profile), and `Renewer`, which
+renews under the refresh lock and stamps a refused grant as `refused_at`.
+From cli-common: `pk_cli_config::profile` (`--profile`, `Profiles`,
+`profile-list/v1`), `pk_cli_auth::vault` and
+`pk_cli_browser::forget_named_profile`. From `pk-med-fhir`: `FhirClient` (retries, the bearer
 source, same-origin paging and `Binary`, statuses to errors), `RawResource`
 and `outcome::status_error`. From `pk-med-records`: the stream writer, its
 header, skip and trailer, the `Organization` and `PatientContext` DTOs,
@@ -69,19 +73,37 @@ Medical records are the most sensitive data a household has.
 
 ## Credentials
 
-- One Keychain item per (practice profile, patient): service
-  `piekstra.athena`, account `smart/<profile>/<patient>`, a
-  `pk_med_smart::SmartSession` (the tokens, the granted scope, the endpoints
-  they belong to, `refused_at`, and athenahealth's revocation endpoint in
-  `extra`). Never printed, logged, or put in argv.
+- A login profile (`--profile`, `ATHENA_PROFILE`) is one person's
+  athenahealth login. Every command that uses a sign-in resolves it with
+  `pk_cli_config::profile::resolve` before the Keychain or the network: no
+  default, and a missing or unknown one is exit 2. `orgs`, `profiles`,
+  `config` and `info` take none. Profile names are the household's own and
+  stay in local config; athena keeps no settings in them (the sign-ins are in
+  the index).
+- One vault entry per (profile, practice profile, patient), named
+  `<profile>/<org>/<patient>`: a `pk_med_smart::SmartSession` (the tokens,
+  the granted scope, the endpoints they belong to, `refused_at`, and
+  athenahealth's revocation endpoint in `extra`), encrypted in
+  `~/.config/athena/vault/` under one Keychain item, the vault's key
+  (service `piekstra.athena`, account `vault-key`). A new build asks once.
+  Never printed, logged, or put in argv.
+- Up to v0.3.x a sign-in was its own Keychain item at `smart/<org>/<patient>`
+  and its index entry has no `profile`. Nothing reads those but `profiles
+  migrate`, which moves the named ones into a profile (one Keychain prompt
+  per item, once, with the owner present).
+- Each index entry records a fingerprint of the login that made it (`login`:
+  12 hex digits of SHA-256 over the ID token's `iss` and `sub`). A sign-in
+  whose login differs from its profile's others is stored with a warning.
 - The client id is configuration (`config set client-id`), never code: each
   household registers its own app (`docs/registration.md`).
 - Renewals run under `pk_cli_auth::refresh_lock::RefreshLock`, so two
   processes never present one refresh token at once.
-- Tests and `make verify` never read the real Keychain: the in-process tests
-  use `pk_med_smart::MemoryStore`, and the surface tests and `smoke` set
-  `ATHENA_KEYCHAIN_SERVICE` to an empty service and reach no command that
-  reads it.
+- Tests and `make verify` never read the real Keychain or vault: the
+  in-process tests use `pk_med_smart::MemoryStore` or a vault keyed by
+  `pk_cli_auth::vault::MemoryKeys`, and the surface tests and `smoke` set
+  `ATHENA_KEYCHAIN_SERVICE` to an empty service, which also moves the vault
+  beside the config in their temp home, and `HOME` to that home, which moves
+  the browser profiles there too.
 - If an `athena` call hangs, it waits on a Keychain approval. Stop calling it
   and tell the owner; a retry only raises another dialog.
 
@@ -105,7 +127,8 @@ Medical records are the most sensitive data a household has.
 - `tests/mock_flow.rs`: sign-in as a caregiver, export, renewal, revoked and
   cancelled sign-ins, outages, documents, against the mock in-process.
 - `tests/cli_surface.rs`: the binary's help, exit codes, JSON errors, `info`,
-  completions, config, and the checks before the Keychain.
+  completions, config, profiles and `--profile`, and the checks before the
+  Keychain.
 - `tests/no_personal_data.rs`: every tracked file, and the fixtures' identities.
 
 `make mock` runs the mock as a server for dogfooding; `examples/mock_server.rs`

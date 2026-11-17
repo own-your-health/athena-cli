@@ -250,7 +250,7 @@ fn bad_id(id: &str) -> CliError {
         "`{id}` is not a document id: expected DocumentReference/<id> or DiagnosticReport/<id>, \
          with #<n> for one of several files"
     ))
-    .with_remedy("list them with `athena documents list`")
+    .with_remedy("list them with `athena --profile <NAME> documents list`")
 }
 
 /// One document by id: its resource read, its file picked out.

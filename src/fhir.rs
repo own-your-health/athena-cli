@@ -49,11 +49,12 @@ fn now() -> u64 {
     crate::unix_now().max(0) as u64
 }
 
-/// The remedy of a refused or missing sign-in names this practice profile.
-pub fn remedied(org: &str, error: CliError) -> CliError {
+/// The remedy of a refused or missing sign-in names its login profile and
+/// practice profile.
+pub fn remedied(profile: Option<&str>, org: &str, error: CliError) -> CliError {
     match error.reason() {
         Some(Reason::CredentialRefused | Reason::NoCredential) => {
-            error.with_remedy(session::sign_in_again(org))
+            error.with_remedy(session::sign_in_again(profile, org))
         }
         _ => error,
     }
@@ -65,6 +66,8 @@ pub fn remedied(org: &str, error: CliError) -> CliError {
 /// `bearer_with` source.
 #[derive(Clone)]
 pub struct Live {
+    /// The login profile the session belongs to, for a remedy.
+    profile: Option<String>,
     account: String,
     store: Store,
     lock: RefreshLock,
@@ -84,7 +87,20 @@ impl Live {
         transport: BlockingTransport,
         session: SmartSession,
     ) -> Result<Live, CliError> {
+        Self::start_in(None, store, lock, transport, session)
+    }
+
+    /// [`start`](Self::start) for a session of login profile `profile`,
+    /// which its remedies name.
+    pub fn start_in(
+        profile: Option<&str>,
+        store: Store,
+        lock: RefreshLock,
+        transport: BlockingTransport,
+        session: SmartSession,
+    ) -> Result<Live, CliError> {
         let live = Live {
+            profile: profile.map(str::to_string),
             account: session.account(),
             client_id: session.client_id.clone(),
             oauth: OAuthClient::new(transport, BIN, VERSION),
@@ -143,7 +159,7 @@ impl Live {
                 if e.reason() == Some(Reason::CredentialRefused) {
                     self.current().refused_at = Some(at);
                 }
-                Err(remedied(&current.organization, e))
+                Err(remedied(self.profile.as_deref(), &current.organization, e))
             }
         }
     }
@@ -171,7 +187,10 @@ impl Client {
                 "the stored sign-in names no patient, so there is nothing to read".into(),
             )
             .because(Reason::NoCredential)
-            .with_remedy(session::sign_in_again(&session.organization)));
+            .with_remedy(session::sign_in_again(
+                live.profile.as_deref(),
+                &session.organization,
+            )));
         };
         let source = live.clone();
         let fhir = FhirClient::new(transport, &session.fhir_base, BIN, VERSION)?
@@ -206,6 +225,11 @@ impl Client {
     /// The practice profile this sign-in belongs to.
     pub fn org(&self) -> &str {
         &self.org
+    }
+
+    /// The login profile the session belongs to, when it is known.
+    pub fn profile(&self) -> Option<&str> {
+        self.live.profile.as_deref()
     }
 
     pub fn patient(&self) -> &str {
@@ -274,7 +298,7 @@ impl Client {
             Err(e) if server_trouble(e) => self.failures.set(self.failures.get() + 1),
             _ => self.failures.set(0),
         }
-        result.map_err(|e| remedied(&self.org, e))
+        result.map_err(|e| remedied(self.live.profile.as_deref(), &self.org, e))
     }
 }
 
@@ -325,12 +349,12 @@ mod tests {
 
     #[test]
     fn a_refused_sign_in_names_the_profile_to_sign_in_again() {
-        let refused = remedied("clinic", answer_401());
+        let refused = remedied(Some("adult1"), "clinic", answer_401());
         assert_eq!(refused.exit_code(), 3);
         assert!(refused
             .to_string()
-            .contains("athena auth login --org clinic"));
-        let other = remedied("clinic", CliError::NotFound("x".into()));
+            .contains("athena --profile adult1 auth login --org clinic"));
+        let other = remedied(Some("adult1"), "clinic", CliError::NotFound("x".into()));
         assert!(!other.to_string().contains("auth login"));
     }
 

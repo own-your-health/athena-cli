@@ -1,25 +1,35 @@
-//! Signed-in patients: one `pk_med_smart::SmartSession` in the keychain per
-//! (practice profile, patient), at account `smart/<org>/<patient>`, and a
-//! non-secret index of which items exist.
+//! Signed-in patients: one `pk_med_smart::SmartSession` per (login profile,
+//! practice profile, patient), in athena's vault (`pk_cli_auth::vault`) at
+//! entry `<profile>/<org>/<patient>`, and a non-secret index of which exist.
 //!
-//! The index (`sessions.json` beside the config, owner-only) lets `patients
-//! list` and `--patient <label>` work without reading the keychain, which on
-//! macOS costs a permission prompt per item for each new build.
+//! The vault keeps every sign-in in its own encrypted file under one keychain
+//! item, its key, so a new or upgraded build asks macOS once, not once per
+//! sign-in. The index (`sessions.json` beside the config, owner-only) lets
+//! `patients list` and `--patient <label>` work without reading the vault.
+//!
+//! Before v0.4.0 each sign-in was its own keychain item at
+//! `smart/<org>/<patient>`, in no profile; `athena profiles migrate` moves it
+//! into one.
 
 use std::path::Path;
 use std::sync::Arc;
 
 use pk_cli_auth::token::DEFAULT_SKEW_SECS;
+use pk_cli_auth::vault::Vault;
+use pk_cli_config::profile::ProfileName;
 use pk_cli_core::{CliError, Reason};
 use pk_cli_secrets::CredentialStore;
-use pk_med_smart::{SessionStore, SmartSession};
+use pk_med_smart::{ProfileSessions, SessionStore, SmartSession};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::env::Environment;
+use crate::BIN;
 
 /// The keychain service. `ATHENA_KEYCHAIN_SERVICE` overrides it for tests
-/// only, so no test or `make verify` step reads the owner's real items.
+/// only, so no test or `make verify` step reads the owner's real items; the
+/// vault then lives beside the config instead of in `~/.config/athena/vault`.
 pub const KEYCHAIN_SERVICE: &str = "piekstra.athena";
 pub const KEYCHAIN_SERVICE_ENV: &str = "ATHENA_KEYCHAIN_SERVICE";
 
@@ -31,7 +41,11 @@ pub const REFRESH_LIFETIME_SECS: u64 = 90 * 24 * 60 * 60;
 /// logout` (`SmartSession::extra`, which renewals carry over).
 pub const REVOCATION_ENDPOINT: &str = "revocation_endpoint";
 
-/// `smart/<org>/<patient>`, the keychain account of one sign-in.
+/// The environment variable `--profile` falls back to.
+pub const PROFILE_ENV: &str = "ATHENA_PROFILE";
+
+/// `smart/<org>/<patient>`: the account of one sign-in within a profile, and
+/// the keychain account of a sign-in stored before v0.4.0.
 pub fn key(org: &str, patient: &str) -> String {
     pk_med_smart::account(org, patient)
 }
@@ -41,30 +55,54 @@ pub type Store = Arc<dyn SessionStore + Send + Sync>;
 
 /// The keychain service in use: `piekstra.athena`, or the test override.
 pub fn service() -> String {
+    service_override().unwrap_or_else(|| KEYCHAIN_SERVICE.to_string())
+}
+
+fn service_override() -> Option<String> {
     std::env::var(KEYCHAIN_SERVICE_ENV)
         .ok()
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| KEYCHAIN_SERVICE.to_string())
 }
 
-/// The raw keychain store, for `auth logout`'s v0.2.x items.
+/// The raw keychain store: the items sign-ins were before v0.4.0, which
+/// `profiles migrate` moves, and `auth logout`'s v0.2.x items.
 pub fn credential_store() -> CredentialStore {
     CredentialStore::new(service())
 }
 
-/// The OS keychain, service `piekstra.athena`.
-pub fn keychain() -> Store {
-    Arc::new(Keychain(credential_store()))
+/// athena's vault: its key in the keychain service, its entries in
+/// `~/.config/athena/vault/`, or under the test override beside the config
+/// in `state_dir`, so a test never opens the owner's vault.
+pub fn vault(state_dir: &Path) -> Result<Arc<Vault>, CliError> {
+    let vault = match service_override() {
+        Some(service) => Vault::new(CredentialStore::new(service), state_dir.join("vault")),
+        None => Vault::for_binary(BIN)?,
+    };
+    Ok(Arc::new(vault))
 }
 
-/// `pk_med_smart`'s keychain store, with a read that fails for any reason
-/// but a refused or missing credential tagged `CredentialUnreadable`, the
-/// code `auth status` has reported since v0.1.0.
-struct Keychain(CredentialStore);
+/// One profile's sign-ins in the vault.
+pub fn profile_store(vault: Arc<Vault>, profile: ProfileName) -> Store {
+    Arc::new(ProfileStore { vault, profile })
+}
 
-impl SessionStore for Keychain {
+/// `pk_med_smart::ProfileSessions` over a vault it shares, with a read that
+/// fails for any reason but a refused or missing credential tagged
+/// `CredentialUnreadable`, the code `auth status` has reported since v0.1.0.
+struct ProfileStore {
+    vault: Arc<Vault>,
+    profile: ProfileName,
+}
+
+impl ProfileStore {
+    fn sessions(&self) -> ProfileSessions<'_> {
+        ProfileSessions::new(&self.vault, self.profile.clone())
+    }
+}
+
+impl SessionStore for ProfileStore {
     fn load(&self, account: &str) -> Result<Option<SmartSession>, CliError> {
-        self.0.load(account).map_err(|e| {
+        self.sessions().load(account).map_err(|e| {
             if e.is_auth() {
                 e
             } else {
@@ -73,23 +111,26 @@ impl SessionStore for Keychain {
         })
     }
     fn save(&self, session: &SmartSession) -> Result<(), CliError> {
-        self.0.save(session)
+        self.sessions().save(session)
     }
     fn delete(&self, account: &str) -> Result<bool, CliError> {
-        SessionStore::delete(&self.0, account)
+        SessionStore::delete(&self.sessions(), account)
     }
 }
 
 /// The stored session at `account`, or exit 3 naming the sign-in to redo.
 pub fn load(store: &dyn SessionStore, entry: &SessionEntry) -> Result<SmartSession, CliError> {
+    let profile = entry.profile.as_deref();
     let found = store.load(&entry.key()).map_err(|e| {
         if e.reason() == Some(Reason::CredentialUnreadable) {
             e.with_remedy(format!(
-                "allow athena when the Keychain asks; if the item still does not read, remove it \
-                 with `athena auth logout --org {org} --patient {patient}`, then sign in again \
-                 with `athena auth login --org {org}`",
+                "allow athena when the Keychain asks; if the sign-in still does not read, \
+                 remove it with `athena --profile {p} auth logout --org {org} --patient \
+                 {patient}`, then {again}",
+                p = profile_or_placeholder(profile),
                 org = entry.org,
-                patient = entry.patient
+                patient = entry.patient,
+                again = sign_in_again(profile, &entry.org)
             ))
         } else {
             e
@@ -97,17 +138,36 @@ pub fn load(store: &dyn SessionStore, entry: &SessionEntry) -> Result<SmartSessi
     })?;
     found.ok_or_else(|| {
         CliError::Auth(format!(
-            "the keychain holds no sign-in for {} at {}",
+            "athena holds no sign-in for {} at {}",
             entry.patient, entry.org
         ))
         .because(Reason::NoCredential)
-        .with_remedy(sign_in_again(&entry.org))
+        .with_remedy(sign_in_again(profile, &entry.org))
     })
 }
 
+fn profile_or_placeholder(profile: Option<&str>) -> &str {
+    profile.unwrap_or("<NAME>")
+}
+
 /// The remedy of a refused or missing sign-in.
-pub fn sign_in_again(org: &str) -> String {
-    format!("sign in again with `athena auth login --org {org}`")
+pub fn sign_in_again(profile: Option<&str>, org: &str) -> String {
+    format!(
+        "sign in again with `athena --profile {} auth login --org {org}`",
+        profile_or_placeholder(profile)
+    )
+}
+
+/// A fingerprint of the login that made `session`: the first 12 hex digits
+/// of the SHA-256 of its ID token's issuer and subject. It tells two logins
+/// apart without naming either. `None` when there is no ID token, or it
+/// carries no `iss` or `sub`.
+pub fn login_fingerprint(session: &SmartSession) -> Option<String> {
+    let claims = pk_cli_auth::token::claims(session.tokens.id_token.as_deref()?)?;
+    let iss = claims.get("iss")?.as_str()?;
+    let sub = claims.get("sub")?.as_str()?;
+    let digest = Sha256::digest(format!("{iss}\n{sub}").as_bytes());
+    Some(digest[..6].iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// When the refresh token lapses, by athenahealth's documented 90 days from
@@ -150,6 +210,10 @@ pub fn revocation_endpoint(session: &SmartSession) -> Option<&str> {
 /// One signed-in patient, as the index records it. No token, no name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionEntry {
+    /// The login profile the sign-in belongs to; `None` for one stored before
+    /// v0.4.0, which `athena profiles migrate` moves into a profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
     pub org: String,
     pub patient: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,12 +229,21 @@ pub struct SessionEntry {
     /// hour without one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signin_expires_at: Option<String>,
+    /// The fingerprint of the login that made the sign-in
+    /// ([`login_fingerprint`]), when its ID token named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<String>,
 }
 
 impl SessionEntry {
-    /// The keychain account of this sign-in.
+    /// The sign-in's account: its vault entry within its profile, or its
+    /// keychain account before v0.4.0.
     pub fn key(&self) -> String {
         key(&self.org, &self.patient)
+    }
+
+    fn is(&self, profile: Option<&str>, org: &str, patient: &str) -> bool {
+        self.profile.as_deref() == profile && self.org == org && self.patient == patient
     }
 }
 
@@ -199,87 +272,150 @@ impl SessionIndex {
         write_private(path, text.as_bytes())
     }
 
-    /// Add or replace the entry for (org, patient).
+    /// Add or replace the entry for (profile, org, patient).
     pub fn upsert(&mut self, entry: SessionEntry) {
         self.sessions
-            .retain(|s| !(s.org == entry.org && s.patient == entry.patient));
+            .retain(|s| !s.is(entry.profile.as_deref(), &entry.org, &entry.patient));
         self.sessions.push(entry);
     }
 
-    /// Give the sign-in labelled `from` at `org` the label `to`, refusing a
-    /// label another sign-in there already has.
-    pub fn relabel(&mut self, org: &str, from: &str, to: &str) -> Result<SessionEntry, CliError> {
-        if from != to
-            && self
-                .sessions
-                .iter()
-                .any(|s| s.org == org && s.label.as_deref() == Some(to))
-        {
-            return Err(CliError::Usage(format!(
-                "the label `{to}` already names another sign-in at `{org}`"
-            ))
-            .with_remedy("relabel or sign out that one first (`athena patients list`)"));
-        }
-        let Some(entry) = self
-            .sessions
+    /// The entry for (profile, org, patient), to change in place.
+    pub fn find_mut(
+        &mut self,
+        profile: Option<&str>,
+        org: &str,
+        patient: &str,
+    ) -> Option<&mut SessionEntry> {
+        self.sessions
             .iter_mut()
-            .find(|s| s.org == org && s.label.as_deref() == Some(from))
-        else {
-            return Err(CliError::NotFound(format!(
-                "no sign-in at `{org}` has the label `{from}`"
+            .find(|s| s.is(profile, org, patient))
+    }
+
+    /// Give the sign-in labelled `from` at `org` in `profile` the label `to`,
+    /// refusing a label another sign-in there already has.
+    pub fn relabel(
+        &mut self,
+        profile: &str,
+        org: &str,
+        from: &str,
+        to: &str,
+    ) -> Result<SessionEntry, CliError> {
+        if from != to && self.label_taken(Some(profile), org, to, None) {
+            return Err(CliError::Usage(format!(
+                "the label `{to}` already names another sign-in at `{org}` in profile `{profile}`"
             ))
-            .with_remedy("list them with `athena patients list`"));
+            .with_remedy(format!(
+                "relabel or sign out that one first (`athena --profile {profile} patients list`)"
+            )));
+        }
+        let Some(entry) = self.sessions.iter_mut().find(|s| {
+            s.profile.as_deref() == Some(profile)
+                && s.org == org
+                && s.label.as_deref() == Some(from)
+        }) else {
+            return Err(CliError::NotFound(format!(
+                "no sign-in at `{org}` in profile `{profile}` has the label `{from}`"
+            ))
+            .with_remedy(format!(
+                "list them with `athena --profile {profile} patients list`"
+            )));
         };
         entry.label = Some(to.to_string());
         Ok(entry.clone())
     }
 
-    pub fn remove(&mut self, org: &str, patient: &str) -> bool {
+    /// Whether a sign-in at `org` in `profile`, other than `except`'s patient,
+    /// has the label `label`.
+    pub fn label_taken(
+        &self,
+        profile: Option<&str>,
+        org: &str,
+        label: &str,
+        except: Option<&str>,
+    ) -> bool {
+        self.sessions.iter().any(|s| {
+            s.profile.as_deref() == profile
+                && s.org == org
+                && s.label.as_deref() == Some(label)
+                && except != Some(s.patient.as_str())
+        })
+    }
+
+    pub fn remove(&mut self, profile: Option<&str>, org: &str, patient: &str) -> bool {
         let before = self.sessions.len();
-        self.sessions
-            .retain(|s| !(s.org == org && s.patient == patient));
+        self.sessions.retain(|s| !s.is(profile, org, patient));
         before != self.sessions.len()
     }
 
-    /// The entries `--org` and `--patient` select (each optional).
-    pub fn matching(&self, patient: Option<&str>, org: Option<&str>) -> Vec<&SessionEntry> {
+    /// The entries of `profile` that `--org` and `--patient` select (each
+    /// optional). `profile` `None` selects the sign-ins stored before v0.4.0,
+    /// which are in no profile.
+    pub fn matching(
+        &self,
+        profile: Option<&str>,
+        patient: Option<&str>,
+        org: Option<&str>,
+    ) -> Vec<&SessionEntry> {
         self.sessions
             .iter()
+            .filter(|s| s.profile.as_deref() == profile)
             .filter(|s| org.is_none_or(|o| s.org == o))
             .filter(|s| patient.is_none_or(|p| s.patient == p || s.label.as_deref() == Some(p)))
             .collect()
     }
 
-    /// Exactly one signed-in patient, by id or label, optionally within one
-    /// practice profile. With no `--patient`, the only one there is.
+    /// How many sign-ins are in no profile (stored before v0.4.0).
+    pub fn unassigned(&self) -> usize {
+        self.sessions.iter().filter(|s| s.profile.is_none()).count()
+    }
+
+    /// Exactly one signed-in patient of `profile`, by id or label, optionally
+    /// within one practice profile. With no `--patient`, the only one there
+    /// is.
     pub fn resolve(
         &self,
+        profile: &str,
         patient: Option<&str>,
         org: Option<&str>,
     ) -> Result<SessionEntry, CliError> {
-        let found = self.matching(patient, org);
+        let found = self.matching(Some(profile), patient, org);
+        let list = format!("list them with `athena --profile {profile} patients list`");
         match (found.len(), patient) {
             (1, _) => Ok(found[0].clone()),
-            (0, None) if self.sessions.is_empty() => {
-                Err(CliError::Auth("no patient is signed in".into())
+            (0, None) if self.matching(Some(profile), None, None).is_empty() => Err(
+                CliError::Auth(format!("no patient is signed in in profile `{profile}`"))
                     .because(Reason::NoCredential)
-                    .with_remedy("sign in with `athena auth login --org <ORG>`"))
-            }
+                    .with_remedy(self.no_sign_in_remedy(profile)),
+            ),
             (0, Some(p)) => Err(CliError::NotFound(format!(
-                "no signed-in patient has the id or label `{p}`{}",
+                "no signed-in patient in profile `{profile}` has the id or label `{p}`{}",
                 org.map(|o| format!(" at `{o}`")).unwrap_or_default()
             ))
-            .with_remedy("list them with `athena patients list`")),
+            .with_remedy(list)),
             (0, None) => Err(CliError::NotFound(format!(
-                "no patient is signed in at `{}`",
+                "no patient is signed in at `{}` in profile `{profile}`",
                 org.unwrap_or_default()
             ))
-            .with_remedy("list them with `athena patients list`")),
+            .with_remedy(list)),
             (_, _) => Err(CliError::Usage(
                 "more than one signed-in patient matches: name one with --patient <ID|LABEL> \
                  and, if needed, --org <ORG>"
                     .into(),
             )),
+        }
+    }
+
+    /// What to do when `profile` has no sign-in: move the ones from before
+    /// v0.4.0 into it, when there are any, else sign in.
+    fn no_sign_in_remedy(&self, profile: &str) -> String {
+        if self.unassigned() > 0 {
+            format!(
+                "move a sign-in stored before v0.4.0 into it with `athena profiles migrate \
+                 {profile} --org <ORG> --patient <ID|LABEL>`, or sign in with `athena --profile \
+                 {profile} auth login --org <ORG>`"
+            )
+        } else {
+            format!("sign in with `athena --profile {profile} auth login --org <ORG>`")
         }
     }
 }
@@ -354,7 +490,12 @@ mod tests {
     use super::*;
 
     fn entry(org: &str, patient: &str, label: Option<&str>) -> SessionEntry {
+        in_profile("adult1", org, patient, label)
+    }
+
+    fn in_profile(profile: &str, org: &str, patient: &str, label: Option<&str>) -> SessionEntry {
         SessionEntry {
+            profile: Some(profile.into()),
             org: org.into(),
             patient: patient.into(),
             label: label.map(Into::into),
@@ -363,65 +504,186 @@ mod tests {
             fhir_base: "https://example.invalid/fhir/r4".into(),
             stored_at: "2026-01-01T00:00:00Z".into(),
             signin_expires_at: None,
+            login: None,
         }
     }
 
     #[test]
-    fn a_patient_resolves_by_id_or_label() {
+    fn a_patient_resolves_by_id_or_label_within_its_profile() {
         let mut index = SessionIndex::default();
         index.upsert(entry("clinic", "a-1.E-1", Some("kid-one")));
         index.upsert(entry("clinic", "a-1.E-2", Some("kid-two")));
+        index.upsert(in_profile("adult2", "clinic", "a-1.E-4", Some("kid-one")));
         assert_eq!(
-            index.resolve(Some("kid-two"), None).unwrap().patient,
+            index
+                .resolve("adult1", Some("kid-two"), None)
+                .unwrap()
+                .patient,
             "a-1.E-2"
         );
         assert_eq!(
             index
-                .resolve(Some("a-1.E-1"), Some("clinic"))
+                .resolve("adult1", Some("kid-one"), Some("clinic"))
                 .unwrap()
                 .patient,
             "a-1.E-1"
         );
-        assert_eq!(index.resolve(None, None).unwrap_err().exit_code(), 2);
         assert_eq!(
-            index.resolve(Some("nobody"), None).unwrap_err().exit_code(),
-            4
+            index
+                .resolve("adult2", Some("kid-one"), None)
+                .unwrap()
+                .patient,
+            "a-1.E-4"
         );
         assert_eq!(
-            SessionIndex::default()
-                .resolve(None, None)
+            index.resolve("adult2", None, None).unwrap().patient,
+            "a-1.E-4"
+        );
+        assert_eq!(
+            index.resolve("adult1", None, None).unwrap_err().exit_code(),
+            2
+        );
+        assert_eq!(
+            index
+                .resolve("adult1", Some("a-1.E-4"), None)
                 .unwrap_err()
                 .exit_code(),
-            3
+            4
+        );
+        let none = index.resolve("adult3", None, None).unwrap_err();
+        assert_eq!(none.exit_code(), 3);
+        assert!(
+            none.remedy()
+                .unwrap()
+                .contains("athena --profile adult3 auth login"),
+            "{none}"
         );
     }
 
     #[test]
-    fn upsert_replaces_the_same_patient() {
+    fn sign_ins_from_before_profiles_are_in_none_and_named_in_the_remedy() {
+        let mut index = SessionIndex::default();
+        let mut old = entry("clinic", "a-1.E-1", Some("kid"));
+        old.profile = None;
+        index.upsert(old);
+        assert_eq!(index.unassigned(), 1);
+        assert!(index.matching(Some("adult1"), None, None).is_empty());
+        assert_eq!(index.matching(None, Some("kid"), None).len(), 1);
+        let err = index.resolve("adult1", None, None).unwrap_err();
+        assert_eq!(err.exit_code(), 3);
+        assert!(
+            err.remedy()
+                .unwrap()
+                .contains("athena profiles migrate adult1 --org <ORG>"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn upsert_replaces_the_same_patient_in_the_same_profile_only() {
         let mut index = SessionIndex::default();
         index.upsert(entry("clinic", "a-1.E-1", Some("old")));
         index.upsert(entry("clinic", "a-1.E-1", Some("new")));
+        index.upsert(in_profile("adult2", "clinic", "a-1.E-1", Some("kid")));
+        assert_eq!(index.sessions.len(), 2);
+        assert_eq!(
+            index.matching(Some("adult1"), None, None)[0]
+                .label
+                .as_deref(),
+            Some("new")
+        );
+        assert!(index
+            .find_mut(Some("adult2"), "clinic", "a-1.E-1")
+            .is_some());
+        assert!(index.remove(Some("adult1"), "clinic", "a-1.E-1"));
+        assert!(!index.remove(Some("adult1"), "clinic", "a-1.E-1"));
         assert_eq!(index.sessions.len(), 1);
-        assert_eq!(index.sessions[0].label.as_deref(), Some("new"));
-        assert!(index.remove("clinic", "a-1.E-1"));
-        assert!(!index.remove("clinic", "a-1.E-1"));
     }
 
     #[test]
-    fn relabel_renames_one_sign_in_and_keeps_labels_distinct() {
+    fn relabel_renames_one_sign_in_and_keeps_labels_distinct_per_profile() {
         let mut index = SessionIndex::default();
         index.upsert(entry("clinic", "a-1.E-1", Some("unconfirmed")));
         index.upsert(entry("clinic", "a-1.E-2", Some("kid")));
         index.upsert(entry("other", "a-1.E-3", Some("adult1")));
-        let renamed = index.relabel("clinic", "unconfirmed", "adult1").unwrap();
+        index.upsert(in_profile("adult2", "clinic", "a-1.E-5", Some("kid")));
+        let renamed = index
+            .relabel("adult1", "clinic", "unconfirmed", "adult1")
+            .unwrap();
         assert_eq!(renamed.patient, "a-1.E-1");
-        assert_eq!(index.matching(Some("adult1"), Some("clinic")).len(), 1);
-        assert!(index.matching(Some("unconfirmed"), None).is_empty());
-        let taken = index.relabel("clinic", "adult1", "kid").unwrap_err();
+        assert_eq!(
+            index
+                .matching(Some("adult1"), Some("adult1"), Some("clinic"))
+                .len(),
+            1
+        );
+        assert!(index
+            .matching(Some("adult1"), Some("unconfirmed"), None)
+            .is_empty());
+        let taken = index
+            .relabel("adult1", "clinic", "adult1", "kid")
+            .unwrap_err();
         assert_eq!(taken.exit_code(), 2);
-        assert!(index.relabel("clinic", "kid", "kid").is_ok());
-        let missing = index.relabel("clinic", "nobody", "x").unwrap_err();
+        assert!(index.relabel("adult1", "clinic", "kid", "kid").is_ok());
+        let missing = index
+            .relabel("adult1", "clinic", "nobody", "x")
+            .unwrap_err();
         assert_eq!(missing.exit_code(), 4);
+        // Another profile's label is its own.
+        let elsewhere = index.relabel("adult2", "clinic", "unconfirmed", "x");
+        assert_eq!(elsewhere.unwrap_err().exit_code(), 4);
+        assert!(index.relabel("adult2", "clinic", "kid", "newborn").is_ok());
+    }
+
+    #[test]
+    fn the_login_fingerprint_tells_logins_apart_without_naming_one() {
+        fn id_token(claims: serde_json::Value) -> String {
+            use base64::Engine;
+            let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+            format!(
+                "{}.{}.sig",
+                b64.encode(br#"{"alg":"RS256"}"#),
+                b64.encode(claims.to_string())
+            )
+        }
+        let mut s = test_session("clinic", "a-1.E-1", None, 0);
+        assert_eq!(login_fingerprint(&s), None);
+        s.tokens.id_token = Some(id_token(
+            serde_json::json!({"iss": "https://idp.example.test", "sub": "user-1"}),
+        ));
+        let one = login_fingerprint(&s).unwrap();
+        assert_eq!(one.len(), 12);
+        assert!(one.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!one.contains("user-1"));
+        s.tokens.id_token = Some(id_token(
+            serde_json::json!({"iss": "https://idp.example.test", "sub": "user-1", "nonce": "n"}),
+        ));
+        assert_eq!(login_fingerprint(&s).unwrap(), one);
+        s.tokens.id_token = Some(id_token(
+            serde_json::json!({"iss": "https://idp.example.test", "sub": "user-2"}),
+        ));
+        assert_ne!(login_fingerprint(&s).unwrap(), one);
+        s.tokens.id_token = Some(id_token(serde_json::json!({"sub": "user-1"})));
+        assert_eq!(login_fingerprint(&s), None);
+    }
+
+    #[test]
+    fn each_profile_keeps_its_own_sign_ins_in_the_vault() {
+        use pk_cli_auth::vault::MemoryKeys;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Arc::new(Vault::new(MemoryKeys::new(), dir.path().join("vault")));
+        let adult1 = profile_store(vault.clone(), ProfileName::parse("adult1").unwrap());
+        let adult2 = profile_store(vault.clone(), ProfileName::parse("adult2").unwrap());
+        let s = test_session("clinic", "a-1.E-1", None, 0);
+        adult1.save(&s).unwrap();
+        assert!(adult1.load(&s.account()).unwrap().is_some());
+        assert!(adult2.load(&s.account()).unwrap().is_none());
+        assert_eq!(
+            vault.names().unwrap(),
+            vec!["adult1/clinic/a-1.E-1".to_string()]
+        );
+        assert!(adult1.delete(&s.account()).unwrap());
+        assert!(vault.names().unwrap().is_empty());
     }
 
     #[test]
@@ -471,8 +733,8 @@ mod tests {
         assert_eq!(err.reason(), Some(Reason::CredentialUnreadable));
         let remedy = err.remedy().unwrap();
         assert!(
-            remedy.contains("athena auth logout --org clinic --patient a-1.E-1")
-                && remedy.contains("athena auth login --org clinic"),
+            remedy.contains("athena --profile adult1 auth logout --org clinic --patient a-1.E-1")
+                && remedy.contains("athena --profile adult1 auth login --org clinic"),
             "{remedy}"
         );
     }

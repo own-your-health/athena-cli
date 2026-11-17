@@ -128,9 +128,9 @@ pub fn export<W: Write>(
         // sign-in asked for Patient, means access was withdrawn.
         Err(e) if e.reason() == Some(Reason::Forbidden) => {
             return Err(e.with_remedy(format!(
-                "sign in again with `athena auth login --org {}`; if it is refused again, the \
-                 practice may have turned off access for this app",
-                client.org()
+                "{}; if it is refused again, the practice may have turned off access for this \
+                 app",
+                crate::session::sign_in_again(client.profile(), client.org())
             )))
         }
         Err(e) => return Err(e),

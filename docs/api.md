@@ -112,6 +112,17 @@ more than 15 minutes, and its code arrived after the listener had closed. A
 code cannot be exchanged by a later process: its PKCE verifier lived only in
 the one that started the sign-in.
 
+From v0.4.0 the start page opens in the login profile's own Chrome profile
+(`pk_med_smart::SignInWindow::open_at`, `browser-profile-<profile>` under
+athena's data directory), not the default browser. athenahealth's login
+widget keeps its session in cookies, so a browser where one parent is signed
+in signs the other in as the first parent without asking; on 2026-11-17 the
+household kept the two apart with a private window per sign-in. The window
+closes when the code arrives, and Chrome writes the cookies it received, so
+the profile's next sign-in finds its device remembered. With `--no-browser`,
+or when the window cannot open (no Chrome), athena prints the address and
+asks for a private window.
+
 ### `aud` chooses the practice, or none
 
 "The value is the FHIR base URL, used to specify the organization for which
@@ -132,9 +143,12 @@ in athenahealth-wide.
 ### One patient record per sign-in
 
 "patients must select a single patient record to grant access" (above). A
-caregiver who sees several children in the portal signs in once per child:
-each sign-in yields one token set for one `Patient`, kept as its own keychain
-item. The token answer names the patient (`"patient": "a-195900.E-60178"` in
+caregiver who sees several records in the portal signs in once per record:
+each sign-in yields one token set for one `Patient`, kept as its own entry in
+the profile's part of the vault. A second sign-in for the same patient in the
+same profile replaces the first, and from v0.4.0 athena revokes the first
+one's tokens once the second is stored; v0.3.x left them live until they
+lapsed. The token answer names the patient (`"patient": "a-195900.E-60178"` in
 athenahealth's shape: `a-<practiceid>.E-<chart id>`). athenahealth's API
 gateway adds that member (seen 2026-11-17 for the sandbox's test patient):
 the Okta server behind it answers without one, and carries the patient only
@@ -261,8 +275,9 @@ From the [Token Endpoint][token] page:
 - `redirect_uri` on the code exchange "must match the value for redirect_uri
   provided to the authorize endpoint".
 
-A sign-in is one `pk_med_smart::SmartSession` in the Keychain, account
-`smart/<profile>/<patient>`. It keeps a refresh token until a token answer
+A sign-in is one `pk_med_smart::SmartSession` in athena's vault
+(`pk_cli_auth::vault`, entry `<profile>/<org>/<patient>`, under one Keychain
+item, `vault-key`). It keeps a refresh token until a token answer
 carries a new one, and `tokens.obtained_at` is the last grant, so athena
 reports the 90-day horizon as `signin_expires_at` from it. `pk_med_smart::Renewer` runs
 every renewal under the family's refresh lock (`pk_cli_auth::refresh_lock`),
@@ -279,13 +294,13 @@ renewed access token read and searched like the first, for an hour.
 **Unverified**: whether a refresh answer carries a new refresh token.
 
 Revocation is `POST /oauth2/v1/revoke` (RFC 7009); `auth logout` revokes the
-refresh and access tokens, then deletes the keychain item. The logout
+refresh and access tokens, then deletes the vault entry. The logout
 endpoint "Terminates an end user's ... login session in the athenahealth login
 widget, which otherwise expires after 10 minutes of idle time ... terminating
 a login session will not invalidate any active access or refresh tokens"
 ([Additional OAuth Endpoints][oauth-extra]); athena has no use for it.
 
-v0.2.x stored a sign-in at `<profile>/<patient>`, which nothing else reads
+v0.2.x stored a sign-in at `<org>/<patient>`, which nothing else reads
 since v0.3.0, so `auth logout` revokes and deletes that item too (one that
 does not read as a sign-in is deleted unrevoked). Each row of
 `auth-logout/v1` has `credential_removed` and `revoked`, which is true only
@@ -295,6 +310,35 @@ under `incomplete` with an `error`, not under `signed_out`. It stays in the
 index so a second `auth logout` retries it. The warning names the manual
 `security delete-generic-password` step, and the command exits with the
 error's code (1) after its one document.
+
+### Which login made a sign-in
+
+Nothing in a sign-in's answer names the person who signed in in a way that
+tells two parents apart: a caregiver's sign-in reads `self`, because
+athenahealth's `fhirUser` names the Patient chosen, not the person (above).
+The ID token's `sub` is the login. athena keeps no `sub`, only a fingerprint
+of it: `login` in the index, the first 12 hex digits of the SHA-256 of
+`iss`, a newline and `sub`. A sign-in whose fingerprint differs from the
+other sign-ins in its profile, in the same environment, is stored with a
+warning and `login_matches_profile: false`. **Unverified**: that `sub` stays
+the same for one login across the records it picks. `profiles migrate`
+reports `logins`, the number of distinct fingerprints in the profile, which
+answers it for the sign-ins moved.
+
+### Moving the sign-ins of v0.3.x into profiles
+
+Up to v0.3.x each sign-in was a Keychain item of its own, account
+`smart/<org>/<patient>`, and macOS asked once per item for each new build.
+v0.4.0 reads none of them until `athena profiles migrate <NAME> --org <ORG>
+--patient <ID|LABEL>...` moves the named ones into a profile
+(`pk_med_smart::migrate_sessions`, one account per call, under the refresh
+lock). Each item is copied into the vault, read back and compared, and only
+then deleted; an item already in the profile is kept by the newer
+`tokens.obtained_at`. Nothing goes over the network. A new build reading an
+old item asks the Keychain once for it, so the move is run with the owner
+present, once per person, with the build that is installed: the vault key it
+creates is then its own and asks nothing. An index entry whose item is gone
+is dropped (`absent`).
 
 ## FHIR R4
 
@@ -365,9 +409,9 @@ is not followed. A reference whose id the rule refuses comes back apart
 
 Remedies. pk_med_smart's errors carry generic remedies (`pk_med_smart::remedy`,
 "sign in again"). athena replaces them with its own commands: a refused code
-exchange or ID token names `athena auth login --org <org>`, and a Keychain
-item that does not read names `athena auth logout --org <org> --patient <id>`,
-then `auth login`.
+exchange or ID token names `athena --profile <profile> auth login --org
+<org>`, and a sign-in that does not read names `athena --profile <profile>
+auth logout --org <org> --patient <id>`, then `auth login`.
 
 ### Documents and Binary
 
@@ -544,6 +588,7 @@ so the old profile is exported first, and kept while the old portal is.
 | The sandbox and a production practice answer 404 to every read of a referenced Practitioner, Organization, Location or Medication, with all four granted | Each is a `not_found` skip; the export stays complete |
 | A clinical note can carry no file (`_data` with `data-absent-reason` `unknown`) | A `no_file` skip in `documents download` |
 | An image attachment's `Binary/<id>` can answer 404 on every base, with `Binary` granted | A `not_found` skip; the export stays complete |
+| athenahealth's login widget signs in whoever is signed in in that browser already, so a second parent signing in in the same browser gets the first parent's records | Each login profile signs in in its own Chrome profile (v0.4.0); `--no-browser` asks for a private window; a sign-in from another login than its profile's others is stored with a warning |
 | The RelatedPerson search can answer 401 ("error calling the PDP service", or "Invalid auth request type") to a token that reads everything else | After one renewal, a `forbidden` skip if `Patient/<id>` still reads; otherwise exit 3 |
 | A new app's client id can be unknown to athenahealth's API gateway after Okta accepts it. Sign-in and consent work, then the token endpoint answers 401 `{"error":"InvalidClient","detailedmessage":"The provided client is not valid in the preview environment"}` (seen 2026-11-16, about an hour after the app was created; it cleared by itself, for the production id 16 to 17 hours and for the Preview id about 18 hours after the apps were created). A token request with a made-up code tells the two apart: 401 `InvalidClient` while the gateway does not know the client, 400 `invalid_grant` once it does. The issuer's own Okta token endpoint accepts the client meanwhile, and the FHIR API reads with the token it issues, but its answer names no patient and a token renewed there is refused (401) | Exit 5 with that message; nothing is stored. athena uses only the token endpoint the SMART configuration names; sign in again once a made-up code gets 400 |
 
