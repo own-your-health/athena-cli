@@ -106,6 +106,12 @@ a registered https page that forwards to the loopback
 (`SmartApp::redirect_uri`, v0.5.0); athena does not use it, because its
 registration lists the loopback URLs themselves.
 
+`auth login` keeps the loopback open for 30 minutes by default (`--timeout`,
+1 to 60), from v0.3.10; it was 5. On 2026-11-17 a caregiver's sign-in took
+more than 15 minutes, and its code arrived after the listener had closed. A
+code cannot be exchanged by a later process: its PKCE verifier lived only in
+the one that started the sign-in.
+
 ### `aud` chooses the practice, or none
 
 "The value is the FHIR base URL, used to specify the organization for which

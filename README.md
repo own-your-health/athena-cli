@@ -11,7 +11,7 @@ athenahealth and athenaOne are athenahealth's trademarks.
 athena orgs refresh                                    # athenahealth's directory of practices, once
 athena orgs search "<practice name>" "<city>"
 athena config set practice clinic --env production --practice-id <P> --brand-id <B> --csg-id <C>
-athena auth login --org clinic --label kid1            # sign in in the browser, one child at a time
+athena auth login --org clinic --label kid1            # sign in in the browser, one patient record at a time
 athena patients list
 athena records export --patient kid1 --ndjson | medrec import --from athena
 athena documents list --patient kid1
@@ -52,6 +52,7 @@ Release assets: `athena-<target>.tar.gz` and `.sha256` for
 | `config set\|unset practice <slug>` | A practice profile: environment, practice, brand and chart sharing group ids, or a FHIR base in full |
 | `auth login --org <ORG> [--label <WHO>]` | Standalone patient launch in the browser (PKCE, loopback); one sign-in per patient record. It refuses a grant with no read scope and names the types a partial grant leaves out (`types_not_granted`) |
 | `auth status` / `auth logout` | Each sign-in's state (`auth-status/v1`); remove one or all |
+| `auth relabel --org <ORG> --from <LABEL> --to <LABEL>` | Rename a sign-in's label (`auth-relabel/v1`), in the local index only: no keychain, no network |
 | `patients list [--org <ORG>]` | The patients signed in, each with `self` or `proxy` (`patient-list/v1`) |
 | `records export --patient <ID> [--since D] --ndjson` | Every resource the practice serves to the patient, files included, as `records-stream/v1` |
 | `documents list\|download` | Visit notes, reports and results' forms (`documents/v1`) |

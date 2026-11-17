@@ -97,6 +97,22 @@ pub enum AuthCmd {
     Status(Select),
     /// Revoke and forget a sign-in.
     Logout(LogoutCmd),
+    /// Rename a sign-in's label (auth-relabel/v1). The label lives only in
+    /// athena's local index: no keychain, no network.
+    Relabel(RelabelCmd),
+}
+
+#[derive(Args, Debug)]
+pub struct RelabelCmd {
+    /// The practice profile the sign-in belongs to.
+    #[arg(long, value_name = "ORG")]
+    pub org: String,
+    /// The label the sign-in has now.
+    #[arg(long, value_name = "LABEL")]
+    pub from: String,
+    /// The label to give it.
+    #[arg(long, value_name = "LABEL")]
+    pub to: String,
 }
 
 #[derive(Args, Debug)]
@@ -112,8 +128,8 @@ pub struct LoginCmd {
     #[arg(long)]
     pub no_browser: bool,
     /// Minutes to wait for the sign-in.
-    #[arg(long, value_name = "MINUTES", default_value_t = 5,
-          value_parser = clap::value_parser!(u64).range(1..=30))]
+    #[arg(long, value_name = "MINUTES", default_value_t = 30,
+          value_parser = clap::value_parser!(u64).range(1..=60))]
     pub timeout: u64,
 }
 
@@ -389,6 +405,7 @@ pub fn run(cli: Cli) -> Result<(), CliError> {
         Command::Auth(AuthCmd::Login(args)) => auth_login(&ctx, args),
         Command::Auth(AuthCmd::Status(select)) => auth_status(&ctx, &select),
         Command::Auth(AuthCmd::Logout(args)) => auth_logout(&ctx, args),
+        Command::Auth(AuthCmd::Relabel(args)) => auth_relabel(&ctx, args),
         Command::Config(cmd) => config_cmd(&ctx, cmd),
         Command::Orgs(cmd) => orgs(&ctx, cmd),
         Command::Patients(PatientsCmd::List { org }) => patients_list(&ctx, org.as_deref()),
@@ -433,7 +450,7 @@ fn info(ctx: &Ctx) {
 
 // ---------------------------------------------------------------- auth
 
-fn validate_label(label: &str) -> Result<(), CliError> {
+fn validate_label(flag: &str, label: &str) -> Result<(), CliError> {
     let ok = !label.is_empty()
         && label.len() <= 40
         && label
@@ -442,16 +459,16 @@ fn validate_label(label: &str) -> Result<(), CliError> {
     if ok {
         Ok(())
     } else {
-        Err(CliError::Usage(
-            "--label takes 1 to 40 of letters, digits, - and _".into(),
-        ))
+        Err(CliError::Usage(format!(
+            "{flag} takes 1 to 40 of letters, digits, - and _"
+        )))
     }
 }
 
 fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
     config::validate_slug(&args.org)?;
     if let Some(label) = &args.label {
-        validate_label(label)?;
+        validate_label("--label", label)?;
     }
     let config = ctx.load()?;
     let practice = config.practice(&args.org)?;
@@ -671,6 +688,32 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
                 ],
             ));
         }
+    }
+    Ok(())
+}
+
+fn auth_relabel(ctx: &Ctx, args: RelabelCmd) -> Result<(), CliError> {
+    config::validate_slug(&args.org)?;
+    validate_label("--from", &args.from)?;
+    validate_label("--to", &args.to)?;
+    let path = ctx.sessions_path()?;
+    let mut index = SessionIndex::load(&path)?;
+    let entry = index.relabel(&args.org, &args.from, &args.to)?;
+    index.save(&path)?;
+    let value = json!({
+        "schema": "auth-relabel/v1",
+        "org": entry.org,
+        "patient": entry.patient,
+        "from": args.from,
+        "to": args.to,
+    });
+    if ctx.json {
+        output::json(&value);
+    } else {
+        println!(
+            "Relabelled {} at {}: {} is now {}.",
+            entry.patient, entry.org, args.from, args.to
+        );
     }
     Ok(())
 }
@@ -1154,9 +1197,16 @@ fn note_renewal(ctx: &Ctx, entry: &SessionEntry, before: &SmartSession, after: &
     let Ok(mut index) = SessionIndex::load(&path) else {
         return;
     };
-    let mut updated = entry.clone();
-    updated.signin_expires_at = Some(rfc3339(session::signin_expires_at(after)));
-    index.upsert(updated);
+    // Only the expiry changes, on the entry as it is now: a relabel or a
+    // sign-out since this command started stands.
+    let Some(current) = index
+        .sessions
+        .iter_mut()
+        .find(|s| s.org == entry.org && s.patient == entry.patient)
+    else {
+        return;
+    };
+    current.signin_expires_at = Some(rfc3339(session::signin_expires_at(after)));
     let _ = index.save(&path);
 }
 
@@ -1587,6 +1637,20 @@ mod tests {
         // Nothing answered: the index is left alone.
         let unchanged = before.clone();
         assert!(!renewed(&before, &unchanged));
+
+        // A relabel while the command ran stands, and a sign-out is not undone.
+        let mut index = SessionIndex::load(&ctx.sessions_path().unwrap()).unwrap();
+        index.sessions[0].label = Some("adult1".into());
+        index.save(&ctx.sessions_path().unwrap()).unwrap();
+        note_renewal(&ctx, &entry, &before, &refused);
+        let saved = SessionIndex::load(&ctx.sessions_path().unwrap()).unwrap();
+        assert_eq!(saved.sessions[0].label.as_deref(), Some("adult1"));
+        SessionIndex::default()
+            .save(&ctx.sessions_path().unwrap())
+            .unwrap();
+        note_renewal(&ctx, &entry, &before, &refused);
+        let saved = SessionIndex::load(&ctx.sessions_path().unwrap()).unwrap();
+        assert!(saved.sessions.is_empty());
     }
 
     #[test]
@@ -1622,9 +1686,9 @@ mod tests {
 
     #[test]
     fn labels_are_checked() {
-        assert!(validate_label("kid1").is_ok());
-        assert!(validate_label("kid_2").is_ok());
-        assert!(validate_label("two words").is_err());
-        assert!(validate_label("").is_err());
+        assert!(validate_label("--label", "kid1").is_ok());
+        assert!(validate_label("--label", "kid_2").is_ok());
+        assert!(validate_label("--label", "two words").is_err());
+        assert!(validate_label("--label", "").is_err());
     }
 }
