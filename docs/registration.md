@@ -112,5 +112,11 @@ athena auth status --json
 athena records export --patient sandbox --ndjson | head -c 300
 ```
 
+A new app's client id can reach athenahealth's API gateway later than its
+sign-in page. Until it does, the sign-in and consent pages work and the
+browser says "signed in", but `auth login` exits 5 with "answered HTTP 401
+(InvalidClient)" and stores nothing. Sign in again later
+([docs/api.md](api.md#traps)).
+
 [naming]: https://docs.athenahealth.com/api/guides/app-naming-guidelines
 [onboarding]: https://docs.athenahealth.com/api/guides/onboarding-overview
