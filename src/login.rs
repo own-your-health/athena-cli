@@ -93,11 +93,11 @@ pub struct Pending {
 pub fn prepare(http: &BlockingTransport, request: &Request<'_>) -> Result<Pending, CliError> {
     let fhir_base = request.practice.fhir_base()?;
     let config = block_on(discover(http, &fhir_base, &Athenahealth, BIN, VERSION))?;
-    let app = SmartApp {
-        app: BIN.to_string(),
-        client: ClientAuth::public(request.client_id),
-        ports: request.ports.to_vec(),
-    };
+    let app = SmartApp::new(
+        BIN,
+        ClientAuth::public(request.client_id),
+        request.ports.to_vec(),
+    );
     let signin = begin(
         &app,
         LaunchRequest {

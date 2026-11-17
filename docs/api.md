@@ -75,7 +75,7 @@ and chart sharing group ID(s) for that organization." ([FHIR Base URLs][base])
 
 ## Sign-in: SMART standalone patient launch
 
-athena signs in through medical-common's `pk_med_smart` (v0.4.9):
+athena signs in through medical-common's `pk_med_smart` (v0.5.0):
 `discover` reads `.well-known/smart-configuration` (and checks that an https
 server names only https endpoints), `begin` binds the redirect listener and
 builds the authorize URL with PKCE S256, state, `aud` and a nonce, and
@@ -101,7 +101,10 @@ Endpoint][authorize]) Okta compares the whole URI, port included, so athena
 does not use an ephemeral port: it listens on 127.0.0.1 at
 `http://127.0.0.1:47816/callback`, or `:47817` when that is taken, and the
 registration lists both. `athena config set redirect-ports` changes them,
-and the registration must change with them.
+and the registration must change with them. `pk_med_smart` can instead send
+a registered https page that forwards to the loopback
+(`SmartApp::redirect_uri`, v0.5.0); athena does not use it, because its
+registration lists the loopback URLs themselves.
 
 ### `aud` chooses the practice, or none
 
@@ -382,8 +385,8 @@ so it counts toward the circuit breaker instead of reading as a refusal.
 A 2xx search can say it left results out: an `OperationOutcome` entry of
 mode `outcome` with an issue coded `suppressed`, which Epic sends as a
 warning naming a sub-resource the client may not read. athena reads each
-search's outcomes with `pk_med_fhir::SearchPage::withheld` (medical-common
-v0.4.9). The export keeps the results that were sent and writes one
+search's outcomes with `pk_med_fhir::SearchPage::withheld` (medical-common,
+since v0.4.9). The export keeps the results that were sent and writes one
 `forbidden` skip per type and distinct line (medical-common DESIGN §1.4):
 `resource_type` set, `id` and `search` unset, the server's line as
 `reason`. A reader takes it as resources of that type the server did not
