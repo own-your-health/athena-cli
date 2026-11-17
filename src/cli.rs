@@ -1182,19 +1182,16 @@ fn profiles_remove(ctx: &Ctx, name: &str, force: bool) -> Result<(), CliError> {
         })?;
     }
     // Sign-ins in the vault that the index does not name are signed out the
-    // same way, revoked first, rather than deleted with their tokens live.
+    // same way, revoked first, rather than deleted with their tokens live,
+    // and counted as they are removed.
     let vault = ctx.vault()?;
-    let unindexed = ProfileSessions::new(&vault, name.clone()).accounts()?;
-    for account in &unindexed {
-        let Some((org, patient)) = account
-            .strip_prefix("smart/")
-            .and_then(|rest| rest.split_once('/'))
-        else {
-            continue;
-        };
-        revoked += usize::from(sign_out(org, patient)?);
+    let mut not_in_index = 0;
+    for account in ProfileSessions::new(&vault, name.clone()).accounts()? {
+        let result = logout::sign_out_account(&http, &lock, &*store, &account)?;
+        not_in_index += usize::from(result.credential_removed);
+        revoked += usize::from(result.revoked);
     }
-    let signed_out = entries.len() + unindexed.len();
+    let signed_out = entries.len() + not_in_index;
     let browser_profile_removed =
         pk_cli_browser::forget_named_profile(BIN, name.as_str()).map_err(CliError::from)?;
     let mut config = ctx.load()?;
@@ -1206,7 +1203,7 @@ fn profiles_remove(ctx: &Ctx, name: &str, force: bool) -> Result<(), CliError> {
             "profile": name.as_str(),
             "signed_out": signed_out,
             "revoked": revoked,
-            "not_in_index": unindexed.len(),
+            "not_in_index": not_in_index,
             "browser_profile_removed": browser_profile_removed,
         }));
     } else {

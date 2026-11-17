@@ -80,12 +80,8 @@ pub fn sign_out(
     org: &str,
     patient: &str,
 ) -> Result<SignedOut, CliError> {
-    let key = session::key(org, patient);
-    let mut revocations = Vec::new();
-    if let Ok(Some(stored)) = store.load(&key) {
-        revocations.push(revoke_all(http, &stored));
-    }
-    let mut found = lock.forget(|| store.delete(&key))?;
+    let (mut found, revoked) = revoke_and_delete(http, lock, store, &session::key(org, patient))?;
+    let mut revocations: Vec<bool> = revoked.into_iter().collect();
     let account = legacy_account(org, patient);
     let left_behind = (|| {
         let Some(item) = legacy.get(&account)? else {
@@ -109,6 +105,41 @@ pub fn sign_out(
         revoked: !revocations.is_empty() && revocations.iter().all(|ok| *ok),
         left_behind,
     })
+}
+
+/// Revoke and delete the session at `account`, as [`sign_out`] does, for a
+/// vault entry that no index row names: the account is used as the vault
+/// lists it, never taken apart, and no v0.2.x item is looked for (those are
+/// found through the index).
+pub fn sign_out_account(
+    http: &dyn Http,
+    lock: &RefreshLock,
+    store: &dyn SessionStore,
+    account: &str,
+) -> Result<SignedOut, CliError> {
+    let (found, revoked) = revoke_and_delete(http, lock, store, account)?;
+    Ok(SignedOut {
+        credential_removed: found,
+        revoked: revoked.unwrap_or(false),
+        left_behind: None,
+    })
+}
+
+/// Revoke the session at `account` if it reads, then delete it under
+/// `lock`: whether there was one, and how its revocation went (`None` when
+/// none was tried).
+fn revoke_and_delete(
+    http: &dyn Http,
+    lock: &RefreshLock,
+    store: &dyn SessionStore,
+    account: &str,
+) -> Result<(bool, Option<bool>), CliError> {
+    let revoked = match store.load(account) {
+        Ok(Some(stored)) => Some(revoke_all(http, &stored)),
+        _ => None,
+    };
+    let found = lock.forget(|| store.delete(account))?;
+    Ok((found, revoked))
 }
 
 /// Revoke the refresh and access tokens, best effort.
@@ -249,6 +280,31 @@ mod tests {
         s.tokens.refresh_token = refresh.map(str::to_string);
         s.tokens.access_token = access.to_string();
         s
+    }
+
+    #[test]
+    fn a_vault_entry_the_index_does_not_name_is_revoked_and_deleted_as_listed() {
+        use pk_cli_auth::vault::{MemoryKeys, Vault};
+        use pk_cli_config::profile::ProfileName;
+        use pk_med_smart::ProfileSessions;
+        let dir = tempfile::tempdir().unwrap();
+        let vault = Vault::new(MemoryKeys::new(), dir.path().join("vault"));
+        let sessions = ProfileSessions::new(&vault, ProfileName::parse("adult1").unwrap());
+        // A patient id with a slash, which the account escapes.
+        let mut stored = signed_in(Some("refresh-1"), "access-1");
+        stored.patient = Some("a-1/E-1".into());
+        SessionStore::save(&sessions, &stored).unwrap();
+        let lock = RefreshLock::at(dir.path().join("refresh.lock"));
+        let sent = Sent::default();
+        let accounts = sessions.accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+        let result = sign_out_account(&sent, &lock, &sessions, &accounts[0]).unwrap();
+        assert!(result.credential_removed && result.revoked);
+        assert_eq!(*sent.0.lock().unwrap(), ["refresh-1", "access-1"]);
+        assert!(sessions.accounts().unwrap().is_empty());
+        // Nothing there: nothing removed, nothing revoked.
+        let again = sign_out_account(&sent, &lock, &sessions, &accounts[0]).unwrap();
+        assert!(!again.credential_removed && !again.revoked);
     }
 
     #[test]
