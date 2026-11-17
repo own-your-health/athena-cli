@@ -416,7 +416,9 @@ An answer that is not a 2xx maps to an exit code by medical-common's
 used when the contract knows it: `login`, `unknown` or `expired` is exit 3
 (sign in again), `forbidden`, `suppressed` or `security` exit 3 (refused),
 `not-found` or `deleted` exit 4. Otherwise the HTTP status decides: 401 and
-403 exit 3, 404 and 410 exit 4, any other 4xx exit 5 (an `unsupported`
+403 exit 3 (in an export, a 401 on one search, read or `Binary` fetch that
+outlasts a renewal while the same sign-in still reads `Patient/<id>` is a
+`forbidden` skip instead; see FHIR R4), 404 and 410 exit 4, any other 4xx exit 5 (an `unsupported`
 skip), and 5xx exit 5. A 429, a 5xx, or a 403 whose body is an HTML page
 (athenahealth's edge rather than the FHIR server) is exit 5 with no reason,
 so it counts toward the circuit breaker instead of reading as a refusal.

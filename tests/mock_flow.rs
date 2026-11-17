@@ -433,6 +433,24 @@ fn a_medication_request_search_names_every_intent() {
     assert_eq!(alone.exit_code(), 3, "{alone}");
     let (text, result) = pull(&c, &tokens);
     result.unwrap();
+    // Every value of FHIR R4's MedicationRequest.intent, once each.
+    let sent = m.medication_request_intents();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    let mut intents: Vec<&str> = sent[0].split(',').collect();
+    intents.sort_unstable();
+    assert_eq!(
+        intents,
+        [
+            "filler-order",
+            "instance-order",
+            "option",
+            "order",
+            "original-order",
+            "plan",
+            "proposal",
+            "reflex-order",
+        ]
+    );
     let out = lines(&text);
     assert_eq!(
         out.iter()

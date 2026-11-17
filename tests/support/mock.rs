@@ -108,6 +108,8 @@ struct State {
     pub log: Vec<(String, String)>,
     refresh_grants: u32,
     refresh_scopes: Vec<String>,
+    /// the `intent` of each MedicationRequest search
+    intents: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -174,6 +176,11 @@ impl Mock {
 
     pub fn refresh_grants(&self) -> u32 {
         self.state.lock().unwrap().refresh_grants
+    }
+
+    /// The `intent` each MedicationRequest search sent, in order.
+    pub fn medication_request_intents(&self) -> Vec<String> {
+        self.state.lock().unwrap().intents.clone()
     }
 
     pub fn refresh_scopes(&self) -> Vec<String> {
@@ -427,6 +434,11 @@ impl Mock {
         let long_ids = s.mode == "long-ids";
         let withheld = s.mode == "withheld";
         let pdp_401 = s.mode == "pdp-401";
+        if path == "MedicationRequest" {
+            if let Some(intent) = q.get("intent") {
+                s.intents.push(intent.clone());
+            }
+        }
         if s.mode == "withdrawn" && path == "RelatedPerson" {
             s.access.clear();
             s.refresh.clear();
