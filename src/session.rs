@@ -4,7 +4,8 @@
 //!
 //! The vault keeps every sign-in in its own encrypted file under one keychain
 //! item, its key, so a new or upgraded build asks macOS once, not once per
-//! sign-in. The index (`sessions.json` beside the config, owner-only) lets
+//! sign-in. The index (`sessions.v2.json` beside the config, owner-only;
+//! v0.3.x's `sessions.json` is read until it exists, and never written) lets
 //! `patients list` and `--patient <label>` work without reading the vault.
 //!
 //! Before v0.4.0 each sign-in was its own keychain item at

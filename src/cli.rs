@@ -1365,10 +1365,7 @@ fn migrate_with(
             } else {
                 (held, old)
             };
-            if kept.tokens.refresh_token != dropped.tokens.refresh_token
-                || kept.tokens.access_token != dropped.tokens.access_token
-            {
-                let revoked = logout::revoke_all(http, &dropped);
+            if let Some(revoked) = logout::revoke_replaced(http, &kept, &dropped) {
                 replaced_revoked += usize::from(revoked);
                 row["replaced"] = json!({ "revoked": revoked });
             }
@@ -2471,6 +2468,32 @@ mod tests {
             .get(&session::key("wide", "a-1.E-1"))
             .unwrap()
             .is_none());
+
+        // Two copies of one grant (a renewal changed only the access token):
+        // nothing is revoked, so the copy kept stays live.
+        let mut index = ctx.index().unwrap();
+        index.upsert(old_entry("a-1.E-2", "adult1"));
+        index.save(&ctx.sessions_path().unwrap()).unwrap();
+        let mut renewed = session::test_session("wide", "a-1.E-2", revoke, 900);
+        renewed.tokens.refresh_token = Some("refresh-shared".into());
+        renewed.tokens.access_token = "access-renewed".into();
+        store.save(&renewed).unwrap();
+        let mut stale = renewed.clone();
+        stale.tokens.access_token = "access-stale".into();
+        stale.tokens.obtained_at = 500;
+        keys.set(
+            &session::key("wide", "a-1.E-2"),
+            &pk_cli_secrets::Secret::new(serde_json::to_string(&stale).unwrap()),
+        )
+        .unwrap();
+        let http = Revocations::default();
+        migrate_revoking(&ctx, &keys, "adult1", &["adult1"], &http).unwrap();
+        assert!(http.0.lock().unwrap().is_empty());
+        let kept = store
+            .load(&session::key("wide", "a-1.E-2"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.tokens.access_token, "access-renewed");
     }
     #[test]
     fn migrate_moves_the_named_sign_ins_into_the_profile_and_only_them() {

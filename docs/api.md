@@ -148,7 +148,11 @@ each sign-in yields one token set for one `Patient`, kept as its own entry in
 the profile's part of the vault. A second sign-in for the same patient in the
 same profile replaces the first, and from v0.4.0 athena revokes the first
 one's tokens once the second is stored; v0.3.x left them live until they
-lapsed. The token answer names the patient (`"patient": "a-195900.E-60178"` in
+lapsed. Only the tokens the replaced copy holds alone are revoked. Two
+copies of one grant (the same refresh token, a renewal having changed only
+the access token) revoke nothing, since a server may end a whole grant when
+either of its tokens is revoked; the old access token lapses within the
+hour. The same rule covers `profiles migrate` below. The token answer names the patient (`"patient": "a-195900.E-60178"` in
 athenahealth's shape: `a-<practiceid>.E-<chart id>`). athenahealth's API
 gateway adds that member (seen 2026-11-17 for the sandbox's test patient):
 the Okta server behind it answers without one, and carries the patient only

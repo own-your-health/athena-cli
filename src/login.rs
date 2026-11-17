@@ -137,12 +137,7 @@ pub fn store_replacing(
     // A previous sign-in that does not read is replaced without a revocation.
     let previous = store.load(&signed_in.account()).ok().flatten();
     lock.store_signin(|| store.save(signed_in))?;
-    Ok(previous
-        .filter(|old| {
-            old.tokens.refresh_token != signed_in.tokens.refresh_token
-                || old.tokens.access_token != signed_in.tokens.access_token
-        })
-        .map(|old| crate::logout::revoke_all(http, &old)))
+    Ok(previous.and_then(|old| crate::logout::revoke_replaced(http, signed_in, &old)))
 }
 
 /// `athena --profile <P> auth login --org <ORG>`, for a remedy.
