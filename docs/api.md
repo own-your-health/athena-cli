@@ -129,12 +129,16 @@ in athenahealth-wide.
 caregiver who sees several children in the portal signs in once per child:
 each sign-in yields one token set for one `Patient`, kept as its own keychain
 item. The token answer names the patient (`"patient": "a-195900.E-60178"` in
-athenahealth's shape: `a-<practiceid>.E-<chart id>`).
+athenahealth's shape: `a-<practiceid>.E-<chart id>`). athenahealth's API
+gateway adds that member: the Okta server behind it answers without one, and
+carries the patient only as access-token claims (`patient`,
+`selectedPatient`, `launch_context`), which athena does not read.
 
 Whether the sign-in was the patient's own or a caregiver's is read from the id
 token's `fhirUser`: the patient's own `Patient/<id>` is `self`, anything else
-(a `RelatedPerson`) is `proxy`. **Unverified**: athenahealth's `fhirUser` for
-a caregiver's sign-in.
+(a `RelatedPerson`) is `proxy`. The sandbox test patient's own sign-in reads
+as `self` (2026-11-17). **Unverified**: athenahealth's `fhirUser` for a
+caregiver's sign-in.
 
 The choice is made on athenahealth's side, after its login: a page on
 `myidentity-support.platform.athenahealth.com` reads "Select a health record
@@ -163,8 +167,9 @@ patient). Choosing a record continues to the consent page.
   grants for every type it reads; `athena config set scope-version v1` asks
   `patient/<Type>.read` instead, for an app registered with SMART V1 scopes
   only. `granted_types` reads v1 and v2 spellings, category narrowings
-  included. **Unverified** until the sandbox sign-in: that a v2 request is
-  granted in full. The consent page ("<app name> is asking to access parts of
+  included. The sandbox granted a v2 request in full on 2026-11-17: 39
+  scopes, every type in `PATIENT_TYPES` (`types_not_granted` empty). The
+  consent page ("<app name> is asking to access parts of
   your medical record") listed 37 permissions on 2026-11-16, all ticked, the
   five SMART-v2-only types among them and "Have offline access" last, under
   one "Allow Access" button. What is granted is read from the token answer.
@@ -278,6 +283,26 @@ DiagnosticReport, DocumentReference, ServiceRequest, Specimen, CarePlan,
 CareTeam, Goal, Device, Coverage, RelatedPerson; then `Patient/<id>` by read,
 and Practitioner, Organization, Location, Medication and Media by read when an
 exported resource refers to them.
+
+The CapabilityStatement names each type's required search parameters in an
+`ah-search-parameter-metadata` extension (`requiredSearchParams`, and
+`requiredAnySearchParams` once per alternative). Of the searched types only
+MedicationRequest needs more than `patient`: `patient, intent` or `_id`. A
+search by `patient` alone answers 403 ("one of the required parameter
+combinations [[patient,intent],[_id]] was not provided"), so athena sends
+every intent value, `intent=proposal,plan,order,original-order,reflex-order,
+filler-order,instance-order,option` (`export::MEDICATION_REQUEST_INTENTS`),
+and the skip's `search` names it.
+
+On 2026-11-17 the sandbox answered the RelatedPerson search for its test
+patient with 401 and `processing`: "An error occurred while calling the PDP
+service (PDP status code: 400 BAD_REQUEST)", while the same token read
+everything else. A 401 is otherwise a refused token, so athena renews once
+and retries. When the retry is refused too, the export reads `Patient/<id>`
+once more: if that read works, the refusal belongs to the one request and is
+a `forbidden` skip whose reason quotes the server; if not, the export ends
+with exit 3 as for any refused sign-in. Specimen and MedicationDispense
+answered empty for that patient.
 
 Ids. FHIR R4 allows 1 to 64 of `A-Z a-z 0-9 - .`. athena applies
 `pk_med_fhir::is_id`, the rule `FhirClient`'s reads apply: the same
@@ -449,7 +474,9 @@ so the old profile is exported first, and kept while the old portal is.
 | `Appointment` search takes no `patient` parameter | Not exported |
 | `Media` has no search | Read through `DiagnosticReport.media` |
 | A 429 can mean the daily limit, where a retry only adds load | Retried only with a short `Retry-After` |
-| A new app's client id can be unknown to athenahealth's API gateway after Okta accepts it. Sign-in and consent work, then the token endpoint answers 401 `{"error":"InvalidClient","detailedmessage":"The provided client is not valid in the preview environment"}` (seen 2026-11-16, about an hour after the app was created). A token request with a made-up code tells the two apart: 401 `InvalidClient` while the gateway does not know the client, 400 `invalid_grant` once it does | Exit 5 with that message; nothing is stored. **Unverified**: that it clears by itself, and when |
+| A search by `patient` alone for MedicationRequest answers 403 | Sends every `intent` value with `patient` |
+| The RelatedPerson search can answer 401 ("error calling the PDP service") to a token that reads everything else | After one renewal, a `forbidden` skip if `Patient/<id>` still reads; otherwise exit 3 |
+| A new app's client id can be unknown to athenahealth's API gateway after Okta accepts it. Sign-in and consent work, then the token endpoint answers 401 `{"error":"InvalidClient","detailedmessage":"The provided client is not valid in the preview environment"}` (seen 2026-11-16, about an hour after the app was created). A token request with a made-up code tells the two apart: 401 `InvalidClient` while the gateway does not know the client, 400 `invalid_grant` once it does. The issuer's own Okta token endpoint accepts the client meanwhile, and the FHIR API reads with the token it issues, but its answer names no patient and a token renewed there is refused (401) | Exit 5 with that message; nothing is stored. athena uses only the token endpoint the SMART configuration names. **Unverified**: that it clears by itself, and when |
 
 [r233]: https://docs.athenahealth.com/api/resources/233-release-developer-console-allows-self-service-onboarding-all-apps-using-only
 [r227]: https://docs.athenahealth.com/api/resources/227-release-updated-enable-authentication-against-multiple-athenaone-practices

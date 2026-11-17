@@ -1,7 +1,7 @@
 [package]
 name = "athena-cli"
 description = "Unofficial CLI that downloads a patient's or caregiver's own records from athenahealth practices through athenahealth's patient-access FHIR API."
-version = "0.3.7"
+version = "0.3.8"
 edition = "2021"
 # pk-cli-auth's refresh lock uses File::try_lock (1.89).
 rust-version = "1.89"

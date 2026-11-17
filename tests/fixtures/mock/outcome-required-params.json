@@ -1,0 +1,10 @@
+{
+  "resourceType": "OperationOutcome",
+  "issue": [
+    {
+      "severity": "error",
+      "code": "forbidden",
+      "diagnostics": "Synthetic: The search query could not be performed because one of the required parameter combinations [[patient,intent],[_id]] was not provided."
+    }
+  ]
+}
