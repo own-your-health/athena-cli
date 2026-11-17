@@ -134,6 +134,14 @@ gateway adds that member: the Okta server behind it answers without one, and
 carries the patient only as access-token claims (`patient`,
 `selectedPatient`, `launch_context`), which athena does not read.
 
+An answer that names no patient is refused. athena revokes its tokens,
+stores nothing, and exits 5 with two facts that tell the causes apart:
+whether `launch/patient` was granted, and the resource type the id token's
+`fhirUser` names (`Patient`, `RelatedPerson` or none). On 2026-11-17 a
+caregiver's production sign-in, against a practice's own base, got such an
+answer after a timed-out login page was retried. v0.3.8 and earlier left
+those tokens live.
+
 Whether the sign-in was the patient's own or a caregiver's is read from the id
 token's `fhirUser`: the patient's own `Patient/<id>` is `self`, anything else
 (a `RelatedPerson`) is `proxy`. The sandbox test patient's own sign-in reads

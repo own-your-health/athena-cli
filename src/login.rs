@@ -155,18 +155,25 @@ impl Pending {
                     e
                 }
             })?;
-        let patient = session.patient.clone().ok_or_else(|| {
-            CliError::Upstream(
-                "athenahealth's answer named no patient: the sign-in must pick one patient record"
-                    .into(),
-            )
-        })?;
-        validate_patient_id(&patient)?;
         if let Some(endpoint) = self.revocation_endpoint {
             session
                 .extra
                 .insert(REVOCATION_ENDPOINT.into(), endpoint.into());
         }
+        let Some(patient) = session.patient.clone() else {
+            crate::logout::revoke_all(http, &session);
+            return Err(CliError::Upstream(format!(
+                "athenahealth's answer named no patient ({}), so the sign-in was not stored \
+                 and its tokens were revoked",
+                no_patient_facts(&session)
+            ))
+            .with_remedy(format!(
+                "start again with `athena auth login --org {}`, and pick one record on \
+                 athenahealth's \"Select a health record\" page",
+                self.org
+            )));
+        };
+        validate_patient_id(&patient)?;
         let not_granted = smart::not_granted(session.tokens.scope.as_deref());
         if not_granted.len() == smart::PATIENT_TYPES.len() {
             // Nothing could be read: the sign-in is not stored, and its
@@ -187,6 +194,27 @@ impl Pending {
             not_granted,
         })
     }
+}
+
+/// What tells apart the reasons a token answer names no patient, without an
+/// id: whether `launch/patient` was granted, and the resource type of the
+/// id token's `fhirUser`.
+fn no_patient_facts(session: &SmartSession) -> String {
+    let launch = session
+        .tokens
+        .scope
+        .as_deref()
+        .is_some_and(|s| s.split(' ').any(|item| item == "launch/patient"));
+    let user = session
+        .fhir_user
+        .as_deref()
+        .and_then(|u| u.rsplit('/').nth(1))
+        .filter(|t| !t.is_empty() && t.chars().all(|c| c.is_ascii_alphabetic()))
+        .unwrap_or("none");
+    format!(
+        "launch/patient granted: {}; fhirUser: {user}",
+        if launch { "yes" } else { "no" }
+    )
 }
 
 /// athena's start page, on 127.0.0.1 at a port the system picks, served

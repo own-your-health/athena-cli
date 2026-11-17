@@ -212,7 +212,7 @@ dependencies = [
 
 [[package]]
 name = "athena-cli"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "assert_cmd",
  "base64 0.22.1",

@@ -1139,6 +1139,23 @@ fn a_grant_with_no_read_scope_is_refused_and_names_the_registration() {
 }
 
 #[test]
+fn an_answer_naming_no_patient_is_refused_and_its_tokens_revoked() {
+    let m = Mock::start(0);
+    let err = sign_in_granting(&m, "no-patient", ScopeSpelling::V2)
+        .err()
+        .expect("no patient was named");
+    assert_eq!(err.exit_code(), 5);
+    let text = err.to_string();
+    assert!(text.contains("named no patient"), "{text}");
+    assert!(
+        text.contains("launch/patient granted: yes; fhirUser: RelatedPerson"),
+        "{text}"
+    );
+    assert!(text.contains("Select a health record"), "{text}");
+    assert_eq!(revocations(&m), 2, "the unstored tokens are revoked");
+}
+
+#[test]
 fn a_v1_registration_signs_in_with_scope_version_v1() {
     let m = Mock::start(0);
     let outcome = sign_in_granting(&m, "grant-v1", ScopeSpelling::V1).expect("signed in");
