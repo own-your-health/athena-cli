@@ -26,7 +26,8 @@
 //! read), `pdp-401` (the RelatedPerson search answers 401 with athenahealth's
 //! "error calling the PDP service" outcome, while every other request works),
 //! `withdrawn` (the RelatedPerson search revokes every token, as a sign-in
-//! withdrawn mid-export, and answers 401).
+//! withdrawn mid-export, and answers 401), `no-patient` (the token answer
+//! names no patient, as a sign-in that skipped athenahealth's record picker).
 //!
 //! In every mode, a MedicationRequest search without `intent` answers 403 with
 //! athenahealth's "required parameter combinations" outcome.
@@ -354,19 +355,19 @@ impl Mock {
                     "fhirUser": FHIR_USER,
                     "sub": "synthetic-user"
                 }));
-                json(
-                    200,
-                    &serde_json::json!({
-                        "token_type": "Bearer",
-                        "expires_in": "3600",
-                        "access_token": access,
-                        "scope": granted.join(" "),
-                        "refresh_token": refresh,
-                        "id_token": id_token,
-                        "patient": PATIENT
-                    })
-                    .to_string(),
-                )
+                let mut answer = serde_json::json!({
+                    "token_type": "Bearer",
+                    "expires_in": "3600",
+                    "access_token": access,
+                    "scope": granted.join(" "),
+                    "refresh_token": refresh,
+                    "id_token": id_token,
+                    "patient": PATIENT
+                });
+                if mode == "no-patient" {
+                    answer.as_object_mut().unwrap().remove("patient");
+                }
+                json(200, &answer.to_string())
             }
             "refresh_token" => {
                 s.refresh_grants += 1;
