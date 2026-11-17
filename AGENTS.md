@@ -18,7 +18,7 @@ from [cli-common](https://github.com/piekstra/cli-common).
 | `src/oauth.rs` | token revocation for `auth logout` |
 | `src/logout.rs` | `auth logout` for one patient: revoke and delete its sign-in and a v0.2.x item (`LegacyItems` is the test seam) |
 | `src/login.rs` | one sign-in through `pk_med_smart` (discover, begin, exchange), the "Log in with athenahealth" start page on a loopback port of its own, and storing a sign-in that replaces another (`store_replacing`, which revokes the old one) |
-| `src/session.rs` | each profile's `SmartSession`s in athena's vault (entry `<profile>/<org>/<patient>`), the login fingerprint, the 90-day horizon, and the session index (`sessions.json`, one entry per profile, org and patient) |
+| `src/session.rs` | each profile's `SmartSession`s in athena's vault (entry `<profile>/<org>/<patient>`), the login fingerprint, the 90-day horizon, and the session index (`sessions.v2.json`, one entry per profile, org and patient, written under `.sessions.lock`; v0.3.x's `sessions.json` is imported, never written) |
 | `src/fhir.rs` | the read client: `pk_med_fhir::FhirClient` with athenahealth's `RetryPolicy`, the `Live` bearer source renewing through `pk_med_smart::Renewer`, and the circuit breaker |
 | `src/export.rs` | the export plan: searches, referenced reads, `Binary` after its parent, skips |
 | `src/stream.rs` | `pk-med-records`' `records-stream/v1` writer and DTOs, re-exported, and athena's header |
@@ -77,7 +77,8 @@ Medical records are the most sensitive data a household has.
   athenahealth login. Every command that uses a sign-in resolves it with
   `pk_cli_config::profile::resolve` before the Keychain or the network: no
   default, and a missing or unknown one is exit 2. `orgs`, `profiles`,
-  `config` and `info` take none. Profile names are the household's own and
+  `config` and `info` refuse the flag (exit 2) and ignore `ATHENA_PROFILE`;
+  `profiles remove|migrate` name theirs as `NAME`. Profile names are the household's own and
   stay in local config; athena keeps no settings in them (the sign-ins are in
   the index).
 - One vault entry per (profile, practice profile, patient), named

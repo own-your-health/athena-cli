@@ -334,11 +334,28 @@ v0.4.0 reads none of them until `athena profiles migrate <NAME> --org <ORG>
 (`pk_med_smart::migrate_sessions`, one account per call, under the refresh
 lock). Each item is copied into the vault, read back and compared, and only
 then deleted; an item already in the profile is kept by the newer
-`tokens.obtained_at`. Nothing goes over the network. A new build reading an
+`tokens.obtained_at`. A new build reading an
 old item asks the Keychain once for it, so the move is run with the owner
 present, once per person, with the build that is installed: the vault key it
 creates is then its own and asks nothing. An index entry whose item is gone
-is dropped (`absent`).
+is dropped (`absent`). When the profile already holds the sign-in (signed in
+again after the upgrade), both copies are read first, and the one the move
+does not keep is revoked (`replaced.revoked`); that is the only request a
+move sends.
+
+The index of sign-ins is `sessions.v2.json` (`"version": 2`), one entry per
+profile, practice profile and patient, written under its own lock
+(`.sessions.lock`) by every command that changes it, so two parents' sign-ins
+finishing at once both stand. v0.4.0 reads v0.3.x's `sessions.json` until
+the new file exists, its sign-ins in no profile, and never writes it: a
+v0.3.x binary run again finds its own index unchanged, though none of the
+sign-ins v0.4.0 holds. An index of a newer version is refused.
+
+`profiles remove` signs out each of the profile's sign-ins the way `auth
+logout` does, revoking first, including any entry in the vault the index
+does not list. `profile-remove/v1` counts them in `signed_out`, those
+revoked in `revoked`, and the vault entries the index did not list in
+`not_in_index`.
 
 ## FHIR R4
 

@@ -244,7 +244,10 @@ fn usage_errors_are_exit_2_with_a_json_error() {
         assert_eq!(code, 2, "{args:?}: {v}");
         assert_eq!(v["error"]["code"], "usage", "{args:?}");
         let message = v["error"]["message"].as_str().unwrap_or_default();
-        assert!(!message.contains("needs a profile"), "{args:?}: {message}");
+        assert!(
+            !message.contains("--profile <NAME>") && !message.contains("no profile"),
+            "{args:?}: {message}"
+        );
     }
     // clap's own refusals are exit 2 too.
     for args in [
@@ -474,10 +477,10 @@ fn relabel_changes_only_the_index() {
     let home = profiled();
     let state = home.join("athena");
     std::fs::create_dir_all(&state).unwrap();
-    let index = state.join("sessions.json");
+    let index = state.join("sessions.v2.json");
     std::fs::write(
         &index,
-        serde_json::json!({"sessions": [{
+        serde_json::json!({"version": 2, "sessions": [{
             "profile": "adult1",
             "org": "clinic",
             "patient": "a-900001.E-1001",
@@ -518,8 +521,8 @@ fn plain_file_export_refuses_a_real_practice_before_the_keychain() {
     let state = home.join("athena");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::write(
-        state.join("sessions.json"),
-        serde_json::json!({"sessions": [{
+        state.join("sessions.v2.json"),
+        serde_json::json!({"version": 2, "sessions": [{
             "profile": "adult1",
             "org": "clinic",
             "patient": "a-900001.E-1001",
@@ -610,8 +613,8 @@ fn org_and_patient_items_read_as_the_profiles_dtos() {
         .save(&state.join("directory.json"))
         .unwrap();
     std::fs::write(
-        state.join("sessions.json"),
-        serde_json::json!({"sessions": [{
+        state.join("sessions.v2.json"),
+        serde_json::json!({"version": 2, "sessions": [{
             "profile": "adult1",
             "org": "clinic",
             "patient": "a-900001.E-1001",
@@ -713,16 +716,41 @@ fn every_command_that_uses_a_sign_in_needs_a_configured_profile() {
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(0));
-    // Commands that use no sign-in take none.
+    // Commands that use no sign-in take none: the flag is refused, and
+    // ATHENA_PROFILE is left alone.
     for args in [
         &["--json", "orgs", "list"][..],
         &["--json", "profiles", "list"][..],
         &["info"][..],
         &["--json", "config", "show"][..],
     ] {
-        let (code, _, err) = run(&home, args);
-        assert_eq!(code, 0, "{args:?}: {err}");
+        let out = athena(&home)
+            .env("ATHENA_PROFILE", "adult9")
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        let mut with_flag = vec!["--profile", "adult1"];
+        with_flag.extend_from_slice(args);
+        let (code, _, err) = run(&home, &with_flag);
+        assert_eq!(code, 2, "{args:?}: {err}");
     }
+    let (code, v, _) = run(
+        &home,
+        &[
+            "--json",
+            "--profile",
+            "adult1",
+            "profiles",
+            "remove",
+            "adult1",
+            "--force",
+        ],
+    );
+    assert_eq!(code, 2, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("NAME"));
+    let (_, v, _) = run(&home, &["--json", "profiles", "list"]);
+    assert_eq!(v["profiles"], serde_json::json!([{"name": "adult1"}]));
 }
 
 #[test]
@@ -847,4 +875,8 @@ fn sign_ins_from_before_profiles_are_listed_and_moved_by_name() {
         &["--json", "profiles", "migrate", "adult1", "--org", "clinic"],
     );
     assert_eq!(code, 2);
+    // v0.3.x's index is read, never written.
+    let (code, _, _) = run_as(&home, &["--json", "auth", "status"]);
+    assert_eq!(code, 0);
+    assert!(!state.join("sessions.v2.json").exists());
 }

@@ -48,7 +48,8 @@ pub struct Cli {
     pub config: Option<PathBuf>,
     /// The login profile to run as, one per person who signs in (`athena
     /// profiles list`); ATHENA_PROFILE when absent. Every command that uses a
-    /// sign-in needs one; there is no default.
+    /// sign-in (auth, patients, records, documents, api) needs one, with no
+    /// default; the others refuse it.
     #[arg(long, global = true, value_name = "NAME")]
     pub profile: Option<String>,
     #[command(subcommand)]
@@ -115,6 +116,7 @@ pub enum ProfilesCmd {
     /// Sign out a profile's sign-ins, revoking their tokens, and remove it
     /// with its browser profile (profile-remove/v1).
     Remove {
+        /// The profile to remove (not `--profile`).
         #[arg(value_name = "NAME")]
         name: String,
         /// Do not ask first.
@@ -122,14 +124,15 @@ pub enum ProfilesCmd {
         force: bool,
     },
     /// Move sign-ins stored before v0.4.0 into a profile (profile-migrate/v1).
-    /// No network and no sign-in; a newly built athena asks the Keychain
+    /// No sign-in, and no request unless a sign-in the profile already holds
+    /// is replaced (it is revoked); a newly built athena asks the Keychain
     /// once for each sign-in it moves.
     Migrate(MigrateCmd),
 }
 
 #[derive(Args, Debug)]
 pub struct MigrateCmd {
-    /// The profile to move them into; added when it is new.
+    /// The profile to move them into (not `--profile`); added when it is new.
     #[arg(value_name = "NAME")]
     pub name: String,
     /// The practice profile the sign-ins belong to.
@@ -383,6 +386,9 @@ pub struct ApiCmd {
     pub select: Select,
 }
 
+/// The lock beside the session index that every write of it holds.
+const INDEX_LOCK: &str = ".sessions.lock";
+
 /// Paths, output mode and the profile flag, shared by every handler.
 struct Ctx {
     json: bool,
@@ -416,14 +422,21 @@ impl Ctx {
         Ok(session::profile_store(self.vault()?, profile.clone()))
     }
 
-    /// Change the session index as it is on disk now: read, change, write.
-    /// A relabel or a sign-out another command made meanwhile stands.
-    fn update_index<R>(&self, change: impl FnOnce(&mut SessionIndex) -> R) -> Result<R, CliError> {
-        let path = self.sessions_path()?;
-        let mut index = SessionIndex::load(&path)?;
-        let result = change(&mut index);
-        index.save(&path)?;
-        Ok(result)
+    /// Change the session index as it is on disk now: read, change and
+    /// write it under a lock of its own, so a sign-in, relabel or sign-out in
+    /// another process meanwhile stands. Nothing is written when `change`
+    /// fails.
+    fn update_index<R>(
+        &self,
+        change: impl FnOnce(&mut SessionIndex) -> Result<R, CliError>,
+    ) -> Result<R, CliError> {
+        let dir = self.state_dir()?;
+        RefreshLock::at(dir.join(INDEX_LOCK)).hold(|| {
+            let mut index = SessionIndex::load_in(&dir)?;
+            let result = change(&mut index)?;
+            index.save(&dir.join(session::INDEX_FILE))?;
+            Ok(result)
+        })
     }
 
     fn config_path(&self) -> Result<PathBuf, CliError> {
@@ -438,8 +451,9 @@ impl Ctx {
             .unwrap_or_else(|| PathBuf::from(".")))
     }
 
+    #[cfg(test)]
     fn sessions_path(&self) -> Result<PathBuf, CliError> {
-        Ok(self.state_dir()?.join("sessions.json"))
+        Ok(self.state_dir()?.join(session::INDEX_FILE))
     }
 
     fn directory_path(&self) -> Result<PathBuf, CliError> {
@@ -459,7 +473,7 @@ impl Ctx {
     }
 
     fn index(&self) -> Result<SessionIndex, CliError> {
-        SessionIndex::load(&self.sessions_path()?)
+        SessionIndex::load_in(&self.state_dir()?)
     }
 
     fn note(&self, message: impl AsRef<str>) {
@@ -493,6 +507,22 @@ pub fn run(cli: Cli) -> Result<(), CliError> {
         profile: cli.profile.clone(),
         vault: OnceCell::new(),
     };
+    let takes_profile = matches!(
+        cli.command,
+        Command::Auth(_)
+            | Command::Patients(_)
+            | Command::Records(_)
+            | Command::Documents(_)
+            | Command::Api(_)
+    );
+    if cli.profile.is_some() && !takes_profile {
+        return Err(CliError::Usage(
+            "--profile is for the commands that use a sign-in (auth, patients, records, \
+             documents, api); `profiles remove` and `profiles migrate` take the profile as \
+             their NAME"
+                .into(),
+        ));
+    }
     match cli.command {
         Command::Auth(AuthCmd::Login(args)) => auth_login(&ctx, args),
         Command::Auth(AuthCmd::Status(select)) => auth_status(&ctx, &select),
@@ -587,7 +617,7 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
     let pending = login::prepare(
         &http,
         &login::Request {
-            profile: Some(profile.as_str()),
+            profile: profile.as_str(),
             org: &args.org,
             practice: &practice,
             org_name: &org_name,
@@ -627,7 +657,7 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
             "warning: athenahealth did not grant reading {}; each export reports them as \
              forbidden skips. To fix it, {}",
             not_granted.join(", "),
-            login::scope_remedy(Some(profile.as_str()), &args.org, config.scope_version())
+            login::scope_remedy(profile.as_str(), &args.org, config.scope_version())
         );
     }
     let signed_in = outcome.session;
@@ -663,7 +693,7 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
             }
         }
         index.upsert(entry.clone());
-        matches
+        Ok(matches)
     })?;
     if login_matches == Some(false) {
         eprintln!(
@@ -891,10 +921,8 @@ fn auth_relabel(ctx: &Ctx, args: RelabelCmd) -> Result<(), CliError> {
     validate_label("--from", &args.from)?;
     validate_label("--to", &args.to)?;
     let profile = ctx.profile(&ctx.load()?)?;
-    let path = ctx.sessions_path()?;
-    let mut index = SessionIndex::load(&path)?;
-    let entry = index.relabel(profile.as_str(), &args.org, &args.from, &args.to)?;
-    index.save(&path)?;
+    let entry =
+        ctx.update_index(|index| index.relabel(profile.as_str(), &args.org, &args.from, &args.to))?;
     let value = json!({
         "schema": "auth-relabel/v1",
         "profile": profile.as_str(),
@@ -964,7 +992,7 @@ fn auth_logout(ctx: &Ctx, args: LogoutCmd) -> Result<(), CliError> {
         match result.left_behind {
             None => {
                 ctx.update_index(|index| {
-                    index.remove(Some(profile.as_str()), &entry.org, &entry.patient)
+                    Ok(index.remove(Some(profile.as_str()), &entry.org, &entry.patient))
                 })?;
                 done.push(row);
             }
@@ -1137,20 +1165,36 @@ fn profiles_remove(ctx: &Ctx, name: &str, force: bool) -> Result<(), CliError> {
     let legacy = session::credential_store();
     let lock = RefreshLock::for_binary(BIN)?;
     let mut revoked = 0;
-    for entry in &entries {
-        let result = logout::sign_out(&http, &lock, &*store, &legacy, &entry.org, &entry.patient)?;
-        if let Some(e) = result.left_behind {
+    let sign_out = |org: &str, patient: &str| -> Result<bool, CliError> {
+        let result = logout::sign_out(&http, &lock, &*store, &legacy, org, patient)?;
+        match result.left_behind {
             // The profile stays, so `profiles remove` can be run again.
-            return Err(e.with_remedy(format!(
+            Some(e) => Err(e.with_remedy(format!(
                 "run `athena profiles remove {name}` again and allow the Keychain prompt"
-            )));
+            ))),
+            None => Ok(result.revoked),
         }
-        revoked += usize::from(result.revoked);
-        ctx.update_index(|index| index.remove(Some(name.as_str()), &entry.org, &entry.patient))?;
+    };
+    for entry in &entries {
+        revoked += usize::from(sign_out(&entry.org, &entry.patient)?);
+        ctx.update_index(|index| {
+            Ok(index.remove(Some(name.as_str()), &entry.org, &entry.patient))
+        })?;
     }
-    // Whatever the index did not name.
+    // Sign-ins in the vault that the index does not name are signed out the
+    // same way, revoked first, rather than deleted with their tokens live.
     let vault = ctx.vault()?;
-    let leftover = ProfileSessions::new(&vault, name.clone()).delete_all()?;
+    let unindexed = ProfileSessions::new(&vault, name.clone()).accounts()?;
+    for account in &unindexed {
+        let Some((org, patient)) = account
+            .strip_prefix("smart/")
+            .and_then(|rest| rest.split_once('/'))
+        else {
+            continue;
+        };
+        revoked += usize::from(sign_out(org, patient)?);
+    }
+    let signed_out = entries.len() + unindexed.len();
     let browser_profile_removed =
         pk_cli_browser::forget_named_profile(BIN, name.as_str()).map_err(CliError::from)?;
     let mut config = ctx.load()?;
@@ -1160,19 +1204,16 @@ fn profiles_remove(ctx: &Ctx, name: &str, force: bool) -> Result<(), CliError> {
         output::json(&json!({
             "schema": "profile-remove/v1",
             "profile": name.as_str(),
-            "signed_out": entries.len() + leftover,
+            "signed_out": signed_out,
             "revoked": revoked,
+            "not_in_index": unindexed.len(),
             "browser_profile_removed": browser_profile_removed,
         }));
     } else {
         println!(
-            "Removed profile {name}: {} sign-in{} signed out, {revoked} revoked{}.",
-            entries.len() + leftover,
-            if entries.len() + leftover == 1 {
-                ""
-            } else {
-                "s"
-            },
+            "Removed profile {name}: {signed_out} sign-in{} signed out, {revoked} of them \
+             revoked{}.",
+            if signed_out == 1 { "" } else { "s" },
             if browser_profile_removed {
                 ", its browser profile removed"
             } else {
@@ -1212,15 +1253,18 @@ fn profiles_migrate(ctx: &Ctx, args: MigrateCmd) -> Result<(), CliError> {
         args,
         &session::credential_store(),
         &RefreshLock::for_binary(BIN)?,
+        &BlockingTransport::new()?,
     )
 }
 
-/// `profiles migrate`, moving items out of `from` under `lock`.
+/// `profiles migrate`, moving items out of `from` under `lock`, and revoking
+/// through `http` a sign-in the move replaces.
 fn migrate_with(
     ctx: &Ctx,
     args: MigrateCmd,
     from: &dyn KeyStore,
     lock: &RefreshLock,
+    http: &dyn crate::http::Http,
 ) -> Result<(), CliError> {
     let name = ProfileName::parse(&args.name)?;
     config::validate_slug(&args.org)?;
@@ -1265,9 +1309,21 @@ fn migrate_with(
     let sessions = ProfileSessions::new(&vault, name.clone());
     let mut totals = Migration::default();
     let mut rows = Vec::new();
+    let mut replaced_revoked = 0;
     for entry in chosen {
+        let account = entry.key();
+        // When the profile holds this sign-in already, both copies are read
+        // first, so the one the move does not keep can be revoked. (Only
+        // then: reading the old item is a Keychain prompt.)
+        let held = sessions.load(&account).ok().flatten();
+        let old = match held {
+            Some(_) => from
+                .get(&account)?
+                .and_then(|text| pk_med_smart::session::decode_session(text.expose()).ok()),
+            None => None,
+        };
         // One account per call, so each sign-in's outcome is known.
-        let done = migrate_sessions(from, &sessions, &[entry.key()], lock)?;
+        let done = migrate_sessions(from, &sessions, std::slice::from_ref(&account), lock)?;
         totals.moved += done.moved;
         totals.kept += done.kept;
         totals.absent += done.absent;
@@ -1299,9 +1355,24 @@ fn migrate_with(
                 e.profile = Some(name.to_string());
                 e.login = login.clone();
             }
+            Ok(())
         })?;
         let mut row = unassigned_row(&entry);
         row["outcome"] = json!(outcome);
+        if let (Some(held), Some(old)) = (held, old) {
+            let (kept, dropped) = if done.moved > 0 {
+                (old, held)
+            } else {
+                (held, old)
+            };
+            if kept.tokens.refresh_token != dropped.tokens.refresh_token
+                || kept.tokens.access_token != dropped.tokens.access_token
+            {
+                let revoked = logout::revoke_all(http, &dropped);
+                replaced_revoked += usize::from(revoked);
+                row["replaced"] = json!({ "revoked": revoked });
+            }
+        }
         rows.push(row);
     }
     let logins = distinct_logins(&ctx.index()?, &name);
@@ -1322,6 +1393,7 @@ fn migrate_with(
             "kept": totals.kept,
             "absent": totals.absent,
             "already_in_profile": already,
+            "replaced_revoked": replaced_revoked,
             "logins": logins,
             "sign_ins": rows,
         }));
@@ -1777,19 +1849,16 @@ fn note_renewal(ctx: &Ctx, entry: &SessionEntry, before: &SmartSession, after: &
     if !renewed(before, after) {
         return;
     }
-    let Ok(path) = ctx.sessions_path() else {
-        return;
-    };
-    let Ok(mut index) = SessionIndex::load(&path) else {
-        return;
-    };
     // Only the expiry changes, on the entry as it is now: a relabel or a
-    // sign-out since this command started stands.
-    let Some(current) = index.find_mut(entry.profile.as_deref(), &entry.org, &entry.patient) else {
-        return;
-    };
-    current.signin_expires_at = Some(rfc3339(session::signin_expires_at(after)));
-    let _ = index.save(&path);
+    // sign-out since this command started stands. Best effort: the vault
+    // already holds the renewal.
+    let _ = ctx.update_index(|index| {
+        if let Some(current) = index.find_mut(entry.profile.as_deref(), &entry.org, &entry.patient)
+        {
+            current.signin_expires_at = Some(rfc3339(session::signin_expires_at(after)));
+        }
+        Ok(())
+    });
 }
 
 fn records_export(ctx: &Ctx, args: ExportCmd) -> Result<(), CliError> {
@@ -2316,11 +2385,35 @@ mod tests {
         .unwrap();
     }
 
+    /// Revocations, answered 200 and counted.
+    #[derive(Default)]
+    struct Revocations(std::sync::Mutex<Vec<String>>);
+
+    impl crate::http::Http for Revocations {
+        fn call(
+            &self,
+            request: pk_cli_core::transport::HttpRequest,
+        ) -> Result<pk_cli_core::transport::HttpResponse, CliError> {
+            self.0.lock().unwrap().push(request.url.clone());
+            Ok(pk_cli_core::transport::HttpResponse::new(200, ""))
+        }
+    }
+
     fn migrate(
         ctx: &Ctx,
         keys: &dyn KeyStore,
         name: &str,
         patients: &[&str],
+    ) -> Result<(), CliError> {
+        migrate_revoking(ctx, keys, name, patients, &Revocations::default())
+    }
+
+    fn migrate_revoking(
+        ctx: &Ctx,
+        keys: &dyn KeyStore,
+        name: &str,
+        patients: &[&str],
+        http: &Revocations,
     ) -> Result<(), CliError> {
         let lock = RefreshLock::at(ctx.state_dir().unwrap().join("refresh.lock"));
         migrate_with(
@@ -2332,9 +2425,53 @@ mod tests {
             },
             keys,
             &lock,
+            http,
         )
     }
 
+    #[test]
+    fn migrate_revokes_the_copy_it_does_not_keep() {
+        use pk_cli_auth::vault::MemoryKeys;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(dir.path());
+        let keys = MemoryKeys::new();
+        let mut index = SessionIndex::default();
+        index.upsert(old_entry("a-1.E-1", "newborn"));
+        index.save(&ctx.sessions_path().unwrap()).unwrap();
+        // The profile signed in again after the upgrade: an older copy in the
+        // vault, and the v0.3 item, newer, with other tokens.
+        let profile = ProfileName::parse("adult1").unwrap();
+        let mut config = ctx.load().unwrap();
+        config.profiles.add(profile.clone());
+        ctx.save(&config).unwrap();
+        let revoke = Some("https://idp.example.test/revoke");
+        let mut held = session::test_session("wide", "a-1.E-1", revoke, 500);
+        held.tokens.access_token = "access-held".into();
+        ctx.sessions(&profile).unwrap().save(&held).unwrap();
+        let mut newer = session::test_session("wide", "a-1.E-1", revoke, 900);
+        newer.tokens.access_token = "access-newer".into();
+        keys.set(
+            &session::key("wide", "a-1.E-1"),
+            &pk_cli_secrets::Secret::new(serde_json::to_string(&newer).unwrap()),
+        )
+        .unwrap();
+
+        let http = Revocations::default();
+        migrate_revoking(&ctx, &keys, "adult1", &["newborn"], &http).unwrap();
+        // The newer copy is kept and the dropped one's access token revoked
+        // (it has no refresh token).
+        let store = ctx.sessions(&profile).unwrap();
+        let kept = store
+            .load(&session::key("wide", "a-1.E-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.tokens.access_token, "access-newer");
+        assert_eq!(http.0.lock().unwrap().len(), 1);
+        assert!(keys
+            .get(&session::key("wide", "a-1.E-1"))
+            .unwrap()
+            .is_none());
+    }
     #[test]
     fn migrate_moves_the_named_sign_ins_into_the_profile_and_only_them() {
         use pk_cli_auth::vault::MemoryKeys;

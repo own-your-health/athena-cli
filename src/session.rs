@@ -247,27 +247,81 @@ impl SessionEntry {
     }
 }
 
-/// `sessions.json`: which token sets exist.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// The session index, keyed by profile, practice profile and patient.
+pub const INDEX_FILE: &str = "sessions.v2.json";
+/// The index of v0.3.x and before, keyed by practice profile and patient.
+/// v0.4.0 imports it once, as sign-ins in no profile, and never writes it, so
+/// a v0.3.x binary run again finds its own index as it left it.
+pub const V1_INDEX_FILE: &str = "sessions.json";
+/// The version [`INDEX_FILE`] is written in.
+pub const INDEX_VERSION: u32 = 2;
+
+/// [`INDEX_FILE`]: which token sets exist.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionIndex {
+    #[serde(default)]
+    pub version: u32,
     #[serde(default)]
     pub sessions: Vec<SessionEntry>,
 }
 
-impl SessionIndex {
-    pub fn load(path: &Path) -> Result<SessionIndex, CliError> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => serde_json::from_str(&text).map_err(|e| {
-                CliError::Other(format!("{} is not a session index: {e}", path.display()))
-            }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SessionIndex::default()),
-            Err(e) => Err(CliError::Other(format!("reading {}: {e}", path.display()))),
+impl Default for SessionIndex {
+    fn default() -> Self {
+        SessionIndex {
+            version: INDEX_VERSION,
+            sessions: Vec::new(),
         }
     }
+}
 
-    /// Write owner-only, through a temporary file renamed into place.
+impl SessionIndex {
+    /// The index at `path`; empty when there is none. One written by a newer
+    /// athena is refused rather than read in this one's shape and written
+    /// back.
+    pub fn load(path: &Path) -> Result<SessionIndex, CliError> {
+        let index: SessionIndex = match std::fs::read_to_string(path) {
+            Ok(text) => serde_json::from_str(&text).map_err(|e| {
+                CliError::Other(format!("{} is not a session index: {e}", path.display()))
+            })?,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(e) => return Err(CliError::Other(format!("reading {}: {e}", path.display()))),
+        };
+        if index.version > INDEX_VERSION {
+            return Err(CliError::Other(format!(
+                "{} was written by a newer athena (index version {}); this one reads {}",
+                path.display(),
+                index.version,
+                INDEX_VERSION
+            ))
+            .with_remedy("update athena with `athena self-update`"));
+        }
+        Ok(index)
+    }
+
+    /// The index in `dir`: [`INDEX_FILE`], or, until that exists, the
+    /// sign-ins of v0.3.x's [`V1_INDEX_FILE`], each in no profile.
+    pub fn load_in(dir: &Path) -> Result<SessionIndex, CliError> {
+        let path = dir.join(INDEX_FILE);
+        if path.exists() {
+            return Self::load(&path);
+        }
+        let mut old = Self::load(&dir.join(V1_INDEX_FILE))?;
+        for entry in &mut old.sessions {
+            entry.profile = None;
+            entry.login = None;
+        }
+        old.version = INDEX_VERSION;
+        Ok(old)
+    }
+
+    /// Write owner-only, through a temporary file renamed into place, in
+    /// [`INDEX_VERSION`].
     pub fn save(&self, path: &Path) -> Result<(), CliError> {
-        let text = serde_json::to_string_pretty(self)
+        let current = SessionIndex {
+            version: INDEX_VERSION,
+            sessions: self.sessions.clone(),
+        };
+        let text = serde_json::to_string_pretty(&current)
             .map_err(|e| CliError::Other(format!("encoding the session index: {e}")))?;
         write_private(path, text.as_bytes())
     }
@@ -757,6 +811,46 @@ mod tests {
             revocation_endpoint(&back),
             Some("https://example.invalid/revoke")
         );
+    }
+
+    #[test]
+    fn v0_3_s_index_is_imported_in_no_profile_and_left_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let v1 = dir.path().join(V1_INDEX_FILE);
+        let text = serde_json::json!({"sessions": [{
+            "org": "clinic",
+            "patient": "a-1.E-1",
+            "label": "kid",
+            "environment": "production",
+            "fhir_base": "https://example.invalid/fhir/r4",
+            "stored_at": "2026-01-01T00:00:00Z"
+        }]})
+        .to_string();
+        std::fs::write(&v1, &text).unwrap();
+        let index = SessionIndex::load_in(dir.path()).unwrap();
+        assert_eq!(index.unassigned(), 1);
+        assert_eq!(index.version, INDEX_VERSION);
+        // Writing goes to the new file; v0.3.x's stays as it was.
+        let mut index = index;
+        index.upsert(entry("clinic", "a-1.E-2", Some("adult1")));
+        index.save(&dir.path().join(INDEX_FILE)).unwrap();
+        assert_eq!(std::fs::read_to_string(&v1).unwrap(), text);
+        let again = SessionIndex::load_in(dir.path()).unwrap();
+        assert_eq!(again, index);
+        // Once the new file exists, the old one is not read again.
+        std::fs::write(&v1, r#"{"sessions": []}"#).unwrap();
+        assert_eq!(SessionIndex::load_in(dir.path()).unwrap().sessions.len(), 2);
+    }
+
+    #[test]
+    fn an_index_from_a_newer_athena_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(INDEX_FILE);
+        std::fs::write(&path, r#"{"version": 3, "sessions": []}"#).unwrap();
+        let err = SessionIndex::load(&path).unwrap_err();
+        assert!(err.to_string().contains("newer athena"), "{err}");
+        let saved = serde_json::to_value(SessionIndex::default()).unwrap();
+        assert_eq!(saved["version"], INDEX_VERSION);
     }
 
     #[test]

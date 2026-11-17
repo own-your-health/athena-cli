@@ -48,7 +48,7 @@ fn prepare_with(
     login::prepare(
         http,
         &login::Request {
-            profile: Some("adult1"),
+            profile: "adult1",
             org: "mock",
             practice: &practice(m),
             org_name: "Mock practice",

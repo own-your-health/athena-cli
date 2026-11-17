@@ -41,7 +41,7 @@ const BUTTON_LOGO: &str = "https://identity-static-assets.platform.athenahealth.
 /// What a sign-in needs from the command line and the config.
 pub struct Request<'a> {
     /// The login profile signing in, which the remedies name.
-    pub profile: Option<&'a str>,
+    pub profile: &'a str,
     /// The practice profile's id: the session's organization.
     pub org: &'a str,
     pub practice: &'a Practice,
@@ -64,7 +64,7 @@ pub struct Outcome {
 
 /// What to do when athenahealth grants fewer read scopes than athena asked
 /// for: the app's registration lacks them.
-pub fn scope_remedy(profile: Option<&str>, org: &str, asked: ScopeSpelling) -> String {
+pub fn scope_remedy(profile: &str, org: &str, asked: ScopeSpelling) -> String {
     let other = match asked {
         ScopeSpelling::V2 => {
             "; an app that holds only FHIR R4 SMART V1 scopes signs in with `athena config set \
@@ -83,7 +83,7 @@ pub fn scope_remedy(profile: Option<&str>, org: &str, asked: ScopeSpelling) -> S
 /// The steps before the browser opens: discovery, the listener, the URL and
 /// the start page.
 pub struct Pending {
-    profile: Option<String>,
+    profile: String,
     signin: SmartSignIn,
     start: StartPage,
     client: ClientAuth,
@@ -114,7 +114,7 @@ pub fn prepare(http: &BlockingTransport, request: &Request<'_>) -> Result<Pendin
     )?;
     let page = start_page(signin.url(), request.org_name, request.practice.environment);
     Ok(Pending {
-        profile: request.profile.map(str::to_string),
+        profile: request.profile.to_string(),
         start: StartPage::serve(page)?,
         signin,
         client: ClientAuth::public(request.client_id),
@@ -146,16 +146,13 @@ pub fn store_replacing(
 }
 
 /// `athena --profile <P> auth login --org <ORG>`, for a remedy.
-fn login_command(profile: Option<&str>, org: &str) -> String {
-    format!(
-        "athena --profile {} auth login --org {org}",
-        profile.unwrap_or("<NAME>")
-    )
+fn login_command(profile: &str, org: &str) -> String {
+    format!("athena --profile {profile} auth login --org {org}")
 }
 
 impl Pending {
     fn login_command(&self) -> String {
-        login_command(self.profile.as_deref(), &self.org)
+        login_command(&self.profile, &self.org)
     }
 
     /// The page to open in the browser.
@@ -214,11 +211,7 @@ impl Pending {
                 not_granted.len(),
                 self.scope_version.as_str()
             ))
-            .with_remedy(scope_remedy(
-                self.profile.as_deref(),
-                &self.org,
-                self.scope_version,
-            )));
+            .with_remedy(scope_remedy(&self.profile, &self.org, self.scope_version)));
         }
         let relationship = smart::relationship(session.fhir_user.as_deref(), &patient);
         Ok(Outcome {

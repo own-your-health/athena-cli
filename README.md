@@ -119,7 +119,10 @@ Up to v0.3.x each sign-in was its own Keychain item (account
 them until `athena profiles migrate <NAME> --org <ORG> --patient <ID|LABEL>`
 moves them, one person's at a time: each item costs one Keychain prompt,
 once, and is deleted once its copy in the vault reads back. Delete test
-sign-ins rather than moving them. v0.3.0 renamed the account from
+sign-ins rather than moving them. The index of sign-ins moved to
+`sessions.v2.json`; v0.4.0 imports v0.3.x's `sessions.json` and never
+writes it. Going back to v0.3.x is not supported: it finds none of the
+sign-ins v0.4.0 holds. v0.3.0 renamed the account from
 `<practice profile>/<patient>`, so a sign-in made with v0.2.x is not found;
 `auth logout` removes such an item too, and when it cannot be read (its
 Keychain prompt was denied) the patient stays listed so `auth logout` can be
