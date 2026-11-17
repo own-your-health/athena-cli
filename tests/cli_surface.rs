@@ -778,8 +778,17 @@ fn profiles_are_added_listed_and_removed() {
         v["profiles"],
         serde_json::json!([{"name": "adult1"}, {"name": "adult2"}])
     );
-    let config = std::fs::read_to_string(home.join("athena").join("config.json")).unwrap();
+    let config_path = home.join("athena").join("config.json");
+    let config = std::fs::read_to_string(&config_path).unwrap();
     assert!(config.contains("\"profiles\""), "{config}");
+    // The config names the household's practices: owner-only, whatever the
+    // umask.
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&config_path)
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o777, 0o600, "config.json is {:o}", mode & 0o777);
 
     // Removing asks first; without a terminal it needs --force.
     let (code, v, _) = run(&home, &["--json", "profiles", "remove", "adult2"]);
