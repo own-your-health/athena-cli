@@ -549,7 +549,7 @@ fn plain_file_export_refuses_a_real_practice_before_the_keychain() {
     let message = json["error"]["message"].as_str().unwrap();
     assert!(message.contains("plain file"), "{message}");
     assert!(
-        message.contains("medrec import --from athena --profile adult1 --patient kid"),
+        message.contains("medrec import --from athena --from-profile adult1 --patient kid"),
         "{message}"
     );
     assert!(!out_dir.exists());

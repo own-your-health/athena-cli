@@ -1914,7 +1914,7 @@ fn export_to_dir(ctx: &Ctx, args: &ExportCmd) -> Result<(), CliError> {
             entry.org
         ))
         .with_remedy(format!(
-            "pipe them into medrec instead: `medrec import --from {BIN} --profile {profile} \
+            "pipe them into medrec instead: `medrec import --from {BIN} --from-profile {profile} \
              --patient {who}`, which runs `{BIN} --profile {profile} records export --patient \
              {who} --ndjson`"
         )));

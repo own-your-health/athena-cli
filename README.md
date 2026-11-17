@@ -15,7 +15,7 @@ athena profiles add adult1                             # one profile per person 
 export ATHENA_PROFILE=adult1                           # or --profile adult1 on each command
 athena auth login --org clinic --label kid1            # sign in in adult1's browser window, one record at a time
 athena patients list
-athena records export --patient kid1 --ndjson | medrec import --from athena --profile adult1
+athena records export --patient kid1 --ndjson | medrec import --from athena --from-profile adult1
 athena documents list --patient kid1
 athena documents download DocumentReference/<id> -o note.pdf --patient kid1
 athena api GET Patient/<id> --patient kid1
