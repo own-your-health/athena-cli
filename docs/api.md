@@ -130,9 +130,10 @@ caregiver who sees several children in the portal signs in once per child:
 each sign-in yields one token set for one `Patient`, kept as its own keychain
 item. The token answer names the patient (`"patient": "a-195900.E-60178"` in
 athenahealth's shape: `a-<practiceid>.E-<chart id>`). athenahealth's API
-gateway adds that member: the Okta server behind it answers without one, and
-carries the patient only as access-token claims (`patient`,
-`selectedPatient`, `launch_context`), which athena does not read.
+gateway adds that member (seen 2026-11-17 for the sandbox's test patient):
+the Okta server behind it answers without one, and carries the patient only
+as access-token claims (`patient`, `selectedPatient`, `launch_context`),
+which athena does not read.
 
 An answer that names no patient is refused. athena revokes its tokens,
 stores nothing, and exits 5 with two facts that tell the causes apart:
@@ -145,8 +146,16 @@ those tokens live.
 Whether the sign-in was the patient's own or a caregiver's is read from the id
 token's `fhirUser`: the patient's own `Patient/<id>` is `self`, anything else
 (a `RelatedPerson`) is `proxy`. The sandbox test patient's own sign-in reads
-as `self` (2026-11-17). **Unverified**: athenahealth's `fhirUser` for a
-caregiver's sign-in.
+as `self` (2026-11-17). So did a caregiver's production sign-in for a
+child's record that day: athenahealth's `fhirUser` named the chosen
+`Patient`. `relationship` therefore cannot tell a caregiver's sign-in from
+the patient's own, and the label given at sign-in is what says whose record
+it is.
+
+A caregiver's production sign-in against the athenahealth-wide base listed
+records at more than one practice in the record picker, and the token answer
+named the patient. Against the practice's own base, one sign-in that day got
+an answer without a patient (above).
 
 The choice is made on athenahealth's side, after its login: a page on
 `myidentity-support.platform.athenahealth.com` reads "Select a health record
@@ -257,8 +266,11 @@ is renewed once and the request sent again. A refused refresh grant stamps
 `refused_at` on the stored session and keeps the refresh token, so `auth
 status` reports the sign-in unusable (`refused_at`, and `signin_expires_at`
 then), and the next command tries one grant before it asks for a new
-sign-in. v0.2.x dropped the refresh token instead. **Unverified**: whether a
-refresh answer carries a new refresh token.
+sign-in. v0.2.x dropped the refresh token instead. On 2026-11-17 the
+sandbox's tokens were renewed at the gateway's token endpoint twice: once
+after the RelatedPerson 401, and once on a token about to lapse. Each
+renewed access token read and searched like the first, for an hour.
+**Unverified**: whether a refresh answer carries a new refresh token.
 
 Revocation is `POST /oauth2/v1/revoke` (RFC 7009); `auth logout` revokes the
 refresh and access tokens, then deletes the keychain item. The logout
@@ -292,6 +304,20 @@ CareTeam, Goal, Device, Coverage, RelatedPerson; then `Patient/<id>` by read,
 and Practitioner, Organization, Location, Medication and Media by read when an
 exported resource refers to them.
 
+On 2026-11-17 the sandbox served none of those referenced resources to its
+test patient's token, although the grant named all four types. Each read
+answered 404 `not-found` ("A resource with that id does not exist"), for ids
+such as `Practitioner/a-80000.Provider-7`, `Organization/a-1.Practice-80000`
+and `Location/a-80000.Department-21`. The same ids by `_id` search answered
+empty Bundles. Adding `ah-practice` changed neither. `_include` added no
+entries either: `MedicationRequest:medication` and
+`DiagnosticReport:performer:Practitioner` were tried. A target with several
+types needs the third part: `DocumentReference:author` answers 400 "3rd
+Parameter for _include is required when target has multiple types". athena
+still reads each reference, and each 404 is a `not_found` skip. A
+production practice answered those reads the same way on 2026-11-17,
+through the athenahealth-wide base.
+
 The CapabilityStatement names each type's required search parameters in an
 `ah-search-parameter-metadata` extension (`requiredSearchParams`, and
 `requiredAnySearchParams` once per alternative). Of the searched types only
@@ -305,7 +331,9 @@ and the skip's `search` names it.
 On 2026-11-17 the sandbox answered the RelatedPerson search for its test
 patient with 401 and `processing`: "An error occurred while calling the PDP
 service (PDP status code: 400 BAD_REQUEST)", while the same token read
-everything else. A 401 is otherwise a refused token, so athena renews once
+everything else. That token came from the Okta server behind the gateway.
+With a token from the gateway the same search answered 401 `processing`
+"Invalid auth request type". A 401 is otherwise a refused token, so athena renews once
 and retries. When the retry is refused too, the export reads `Patient/<id>`
 once more: if that read works, the refusal belongs to the one request and is
 a `forbidden` skip whose reason quotes the server; if not, the export ends
@@ -353,6 +381,22 @@ then `auth login`.
 
 athena fetches only `Binary` on the signed-in FHIR server's own origin; an
 attachment elsewhere is a skip (`unsupported`), never a request with the token.
+
+On 2026-11-17 the sandbox's test patient had 169 DocumentReferences, and
+none pointed at a `Binary`. 56 carried the file inline as `data`, `text/html`
+or `text/plain`. The other 113 were clinical notes with no file: the
+attachment has `contentType` `application/octet-stream` and `_data` with a
+`data-absent-reason` of `unknown`. Two DiagnosticReports carried an inline
+`presentedForm`. `documents download --all` saved the 58 inline files and
+skipped the 113 as `no_file`.
+
+A production patient's DocumentReferences showed both kinds on 2026-11-17,
+inline `text/html` files and notes without one, and a third. One
+DocumentReference had four `image/png` attachments at `Binary/<id>`, and
+every read of those answered 404 `not-found` ("A resource with that id does
+not exist"). They answered the same on the athenahealth-wide base and on the
+practice's own base, with `Binary` granted. Each is a `not_found` skip.
+**Unverified**: why.
 
 `documents download` names a file `<date>_<name>_<id>.<ext>`: at most 60
 characters of the name, and the id whole up to 64 characters. A longer id
@@ -461,6 +505,12 @@ page. Preview practice 195900 also holds synthetic test patients
 [Testing in the Sandbox][sandbox]). A sign-in to the sandbox needs a Preview
 client id.
 
+On 2026-11-17 athena v0.3.8 signed in as the test patient through the
+gateway. The sign-in read as `self`, was granted every type, and carried a
+refresh token. `records export` was complete, with one `forbidden` skip
+(RelatedPerson) and a `not_found` skip for each referenced read. It was
+complete again on a renewed token.
+
 ## Practice migrations
 
 A practice that moves to a new athenaOne practice id gets a new FHIR base and
@@ -485,8 +535,11 @@ so the old profile is exported first, and kept while the old portal is.
 | `Media` has no search | Read through `DiagnosticReport.media` |
 | A 429 can mean the daily limit, where a retry only adds load | Retried only with a short `Retry-After` |
 | A search by `patient` alone for MedicationRequest answers 403 | Sends every `intent` value with `patient` |
-| The RelatedPerson search can answer 401 ("error calling the PDP service") to a token that reads everything else | After one renewal, a `forbidden` skip if `Patient/<id>` still reads; otherwise exit 3 |
-| A new app's client id can be unknown to athenahealth's API gateway after Okta accepts it. Sign-in and consent work, then the token endpoint answers 401 `{"error":"InvalidClient","detailedmessage":"The provided client is not valid in the preview environment"}` (seen 2026-11-16, about an hour after the app was created). A token request with a made-up code tells the two apart: 401 `InvalidClient` while the gateway does not know the client, 400 `invalid_grant` once it does. The issuer's own Okta token endpoint accepts the client meanwhile, and the FHIR API reads with the token it issues, but its answer names no patient and a token renewed there is refused (401) | Exit 5 with that message; nothing is stored. athena uses only the token endpoint the SMART configuration names. **Unverified**: that it clears by itself, and when |
+| The sandbox and a production practice answer 404 to every read of a referenced Practitioner, Organization, Location or Medication, with all four granted | Each is a `not_found` skip; the export stays complete |
+| A clinical note can carry no file (`_data` with `data-absent-reason` `unknown`) | A `no_file` skip in `documents download` |
+| An image attachment's `Binary/<id>` can answer 404 on every base, with `Binary` granted | A `not_found` skip; the export stays complete |
+| The RelatedPerson search can answer 401 ("error calling the PDP service", or "Invalid auth request type") to a token that reads everything else | After one renewal, a `forbidden` skip if `Patient/<id>` still reads; otherwise exit 3 |
+| A new app's client id can be unknown to athenahealth's API gateway after Okta accepts it. Sign-in and consent work, then the token endpoint answers 401 `{"error":"InvalidClient","detailedmessage":"The provided client is not valid in the preview environment"}` (seen 2026-11-16, about an hour after the app was created; it cleared by itself, for the production id 16 to 17 hours and for the Preview id about 18 hours after the apps were created). A token request with a made-up code tells the two apart: 401 `InvalidClient` while the gateway does not know the client, 400 `invalid_grant` once it does. The issuer's own Okta token endpoint accepts the client meanwhile, and the FHIR API reads with the token it issues, but its answer names no patient and a token renewed there is refused (401) | Exit 5 with that message; nothing is stored. athena uses only the token endpoint the SMART configuration names; sign in again once a made-up code gets 400 |
 
 [r233]: https://docs.athenahealth.com/api/resources/233-release-developer-console-allows-self-service-onboarding-all-apps-using-only
 [r227]: https://docs.athenahealth.com/api/resources/227-release-updated-enable-authentication-against-multiple-athenaone-practices
