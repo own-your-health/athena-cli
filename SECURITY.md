@@ -11,7 +11,8 @@ on this repository. Please do not open a public issue.
   `piekstra.athena`, account `vault-key`). They are never printed, logged,
   written to a file in the clear, or passed in argv. `athena auth logout`
   revokes them at athenahealth and deletes the entry, and a second sign-in
-  for the same patient revokes the one it replaces.
+  for the same patient revokes the tokens the one it replaces held alone
+  (nothing, when both are one renewed grant, so the new one stays live).
 - **Profiles** keep one person's login apart from another's: each has its own
   sign-ins and its own Chrome profile for signing in, and every command that
   uses a sign-in must name its profile.

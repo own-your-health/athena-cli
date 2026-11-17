@@ -126,8 +126,9 @@ pub fn prepare(http: &BlockingTransport, request: &Request<'_>) -> Result<Pendin
 }
 
 /// Store `signed_in` under `lock`, replacing the profile's sign-in for the
-/// same patient, whose tokens are then revoked so none is left live unseen.
-/// `Some(revoked)` when a sign-in with other tokens was replaced.
+/// same patient, then revoking what the old copy held alone (see
+/// [`crate::logout::revoke_replaced`]). `Some(revoked)` when there was
+/// something to revoke.
 pub fn store_replacing(
     http: &dyn crate::http::Http,
     lock: &pk_cli_auth::refresh_lock::RefreshLock,

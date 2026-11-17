@@ -124,9 +124,9 @@ pub enum ProfilesCmd {
         force: bool,
     },
     /// Move sign-ins stored before v0.4.0 into a profile (profile-migrate/v1).
-    /// No sign-in, and no request unless a sign-in the profile already holds
-    /// is replaced (it is revoked); a newly built athena asks the Keychain
-    /// once for each sign-in it moves.
+    /// No sign-in, and no request unless it replaces a sign-in the profile
+    /// already holds, whose own tokens are then revoked; a newly built athena
+    /// asks the Keychain once for each sign-in it moves.
     Migrate(MigrateCmd),
 }
 

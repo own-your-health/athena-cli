@@ -54,7 +54,7 @@ Release assets: `athena-<target>.tar.gz` and `.sha256` for
 | `config set\|unset practice <slug>` | A practice profile: environment, practice, brand and chart sharing group ids, or a FHIR base in full |
 | `profiles list\|add\|remove` | Login profiles, one per person who signs in (`profile-list/v1`). `remove` signs out the profile's sign-ins, revoking them, and removes its browser profile; it asks first, or takes `--force` |
 | `profiles migrate <NAME> --org <ORG> --patient <ID\|LABEL>...` | Move sign-ins stored before v0.4.0 into a profile (`profile-migrate/v1`); `profiles list` shows them |
-| `auth login --org <ORG> [--label <WHO>]` | Standalone patient launch in the profile's own Chrome window (PKCE, loopback); one sign-in per patient record. It refuses a grant with no read scope and names the types a partial grant leaves out (`types_not_granted`). A second sign-in for the same patient replaces the first and revokes its tokens |
+| `auth login --org <ORG> [--label <WHO>]` | Standalone patient launch in the profile's own Chrome window (PKCE, loopback); one sign-in per patient record. It refuses a grant with no read scope and names the types a partial grant leaves out (`types_not_granted`). A second sign-in for the same patient replaces the first and revokes the tokens the first held alone (nothing, when both are one renewed grant) |
 | `auth status` / `auth logout` | Each sign-in's state (`auth-status/v1`); remove one or all |
 | `auth relabel --org <ORG> --from <LABEL> --to <LABEL>` | Rename a sign-in's label (`auth-relabel/v1`), in the local index only: no keychain, no network |
 | `patients list [--org <ORG>]` | The patients signed in, each with `self` or `proxy` (`patient-list/v1`) |

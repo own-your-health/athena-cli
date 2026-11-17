@@ -17,7 +17,7 @@ from [cli-common](https://github.com/piekstra/cli-common).
 | `src/smart.rs` | athenahealth's `VendorQuirks` (none beyond the defaults), the scopes, granted types, `self` or `proxy` |
 | `src/oauth.rs` | token revocation for `auth logout` |
 | `src/logout.rs` | `auth logout` for one patient: revoke and delete its sign-in and a v0.2.x item (`LegacyItems` is the test seam) |
-| `src/login.rs` | one sign-in through `pk_med_smart` (discover, begin, exchange), the "Log in with athenahealth" start page on a loopback port of its own, and storing a sign-in that replaces another (`store_replacing`, which revokes the old one) |
+| `src/login.rs` | one sign-in through `pk_med_smart` (discover, begin, exchange), the "Log in with athenahealth" start page on a loopback port of its own, and storing a sign-in that replaces another (`store_replacing`, which revokes the tokens the old one held alone: nothing, when both copies are one renewed grant) |
 | `src/session.rs` | each profile's `SmartSession`s in athena's vault (entry `<profile>/<org>/<patient>`), the login fingerprint, the 90-day horizon, and the session index (`sessions.v2.json`, one entry per profile, org and patient, written under `.sessions.lock`; v0.3.x's `sessions.json` is imported, never written) |
 | `src/fhir.rs` | the read client: `pk_med_fhir::FhirClient` with athenahealth's `RetryPolicy`, the `Live` bearer source renewing through `pk_med_smart::Renewer`, and the circuit breaker |
 | `src/export.rs` | the export plan: searches, referenced reads, `Binary` after its parent, skips |
