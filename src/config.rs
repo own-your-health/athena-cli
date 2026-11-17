@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use pk_cli_config::profile::Profiles;
 use pk_cli_core::transport::require_secure_url;
 use pk_cli_core::CliError;
 use serde::{Deserialize, Serialize};
@@ -37,6 +38,11 @@ pub struct Config {
     /// Practice profiles by slug.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub practices: BTreeMap<String, Practice>,
+    /// Login profiles, one per person who signs in (`--profile`). athena
+    /// keeps no settings in them: a profile's sign-ins are in the session
+    /// index and the vault.
+    #[serde(default, skip_serializing_if = "Profiles::is_empty")]
+    pub profiles: Profiles,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -289,7 +295,7 @@ pub fn validate_slug(slug: &str) -> Result<(), CliError> {
         Ok(())
     } else {
         Err(CliError::Usage(format!(
-            "`{slug}` is not a profile name: use 1 to 40 of a-z, 0-9 and -"
+            "`{slug}` is not a practice profile name: use 1 to 40 of a-z, 0-9 and -"
         )))
     }
 }

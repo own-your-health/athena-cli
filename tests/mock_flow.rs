@@ -48,6 +48,7 @@ fn prepare_with(
     login::prepare(
         http,
         &login::Request {
+            profile: "adult1",
             org: "mock",
             practice: &practice(m),
             org_name: "Mock practice",
@@ -90,8 +91,14 @@ fn lock() -> RefreshLock {
 /// The session stored in `store`, and a client over it.
 fn client(http: &BlockingTransport, store: &Arc<MemoryStore>, signed_in: &SmartSession) -> Client {
     store.save(signed_in).unwrap();
-    let live = Live::start(store.clone(), lock(), http.clone(), signed_in.clone())
-        .expect("start the session");
+    let live = Live::start_in(
+        Some("adult1"),
+        store.clone(),
+        lock(),
+        http.clone(),
+        signed_in.clone(),
+    )
+    .expect("start the session");
     Client::new(http.clone(), live)
         .expect("a client")
         .sleeper(no_sleep)
@@ -209,7 +216,7 @@ fn an_id_token_for_another_sign_in_is_refused() {
     assert!(err.message().contains("nonce"), "{err}");
     assert_eq!(
         err.remedy(),
-        Some("start again with `athena auth login --org mock`")
+        Some("start again with `athena --profile adult1 auth login --org mock`")
     );
 }
 
@@ -351,11 +358,12 @@ fn a_stored_sign_in_without_a_patient_is_refused_before_any_read() {
     let store = Arc::new(MemoryStore::default());
     store.save(&tokens).unwrap();
     let before = m.requests().len();
-    let live = Live::start(store.clone(), lock(), http.clone(), tokens).unwrap();
+    let live = Live::start_in(Some("adult1"), store.clone(), lock(), http.clone(), tokens).unwrap();
     let err = Client::new(http.clone(), live).err().expect("refused");
     assert_eq!(err.exit_code(), 3);
     assert!(
-        err.to_string().contains("athena auth login --org mock"),
+        err.to_string()
+            .contains("athena --profile adult1 auth login --org mock"),
         "{err}"
     );
     assert_eq!(m.requests().len(), before, "nothing was sent");
@@ -394,7 +402,8 @@ fn a_revoked_sign_in_ends_the_stream_incomplete_with_exit_3() {
     let err = result.unwrap_err();
     assert_eq!(err.exit_code(), 3);
     assert!(
-        err.to_string().contains("athena auth login --org mock"),
+        err.to_string()
+            .contains("athena --profile adult1 auth login --org mock"),
         "{err}"
     );
     let out = lines(&text);
@@ -616,7 +625,8 @@ fn a_cancelled_sign_in_is_exit_3() {
     assert_eq!(err.exit_code(), 3);
     assert!(err.message().contains("access_denied"), "{err}");
     assert!(
-        err.to_string().contains("athena auth login --org mock"),
+        err.to_string()
+            .contains("athena --profile adult1 auth login --org mock"),
         "{err}"
     );
     let page = browser.join().unwrap();
@@ -1246,5 +1256,35 @@ fn what_a_search_says_it_left_out_is_a_forbidden_skip_and_its_results_are_kept()
     assert!(
         unchanged.get("withheld").is_none(),
         "unchanged when nothing is withheld"
+    );
+}
+
+#[test]
+fn a_second_sign_in_for_the_patient_replaces_the_first_and_revokes_it() {
+    let m = Mock::start(0);
+    let http = BlockingTransport::new().unwrap();
+    let store = MemoryStore::default();
+    let first = sign_in(&m, &http);
+    assert_eq!(
+        login::store_replacing(&http, &lock(), &store, &first).unwrap(),
+        None
+    );
+    assert_eq!(revocations(&m), 0);
+    // The same tokens again replace nothing.
+    assert_eq!(
+        login::store_replacing(&http, &lock(), &store, &first).unwrap(),
+        None
+    );
+    let second = sign_in(&m, &http);
+    assert_ne!(first.tokens.access_token, second.tokens.access_token);
+    assert_eq!(
+        login::store_replacing(&http, &lock(), &store, &second).unwrap(),
+        Some(true)
+    );
+    // The first sign-in's refresh and access tokens.
+    assert_eq!(revocations(&m), 2);
+    assert_eq!(
+        stored(&store).tokens.access_token,
+        second.tokens.access_token
     );
 }

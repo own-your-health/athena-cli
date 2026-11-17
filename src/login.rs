@@ -40,6 +40,8 @@ const BUTTON_LOGO: &str = "https://identity-static-assets.platform.athenahealth.
 
 /// What a sign-in needs from the command line and the config.
 pub struct Request<'a> {
+    /// The login profile signing in, which the remedies name.
+    pub profile: &'a str,
     /// The practice profile's id: the session's organization.
     pub org: &'a str,
     pub practice: &'a Practice,
@@ -62,7 +64,7 @@ pub struct Outcome {
 
 /// What to do when athenahealth grants fewer read scopes than athena asked
 /// for: the app's registration lacks them.
-pub fn scope_remedy(org: &str, asked: ScopeSpelling) -> String {
+pub fn scope_remedy(profile: &str, org: &str, asked: ScopeSpelling) -> String {
     let other = match asked {
         ScopeSpelling::V2 => {
             "; an app that holds only FHIR R4 SMART V1 scopes signs in with `athena config set \
@@ -73,13 +75,15 @@ pub fn scope_remedy(org: &str, asked: ScopeSpelling) -> String {
     format!(
         "add FHIR R4 SMART V2 read and search for each type to the app's scopes in \
          athenahealth's Developer Portal (docs/registration.md, step 5){other}; then run \
-         `athena auth login --org {org}` again"
+         `{}` again",
+        login_command(profile, org)
     )
 }
 
 /// The steps before the browser opens: discovery, the listener, the URL and
 /// the start page.
 pub struct Pending {
+    profile: String,
     signin: SmartSignIn,
     start: StartPage,
     client: ClientAuth,
@@ -110,6 +114,7 @@ pub fn prepare(http: &BlockingTransport, request: &Request<'_>) -> Result<Pendin
     )?;
     let page = start_page(signin.url(), request.org_name, request.practice.environment);
     Ok(Pending {
+        profile: request.profile.to_string(),
         start: StartPage::serve(page)?,
         signin,
         client: ClientAuth::public(request.client_id),
@@ -120,7 +125,32 @@ pub fn prepare(http: &BlockingTransport, request: &Request<'_>) -> Result<Pendin
     })
 }
 
+/// Store `signed_in` under `lock`, replacing the profile's sign-in for the
+/// same patient, then revoking what the old copy held alone (see
+/// [`crate::logout::revoke_replaced`]). `Some(revoked)` when there was
+/// something to revoke.
+pub fn store_replacing(
+    http: &dyn crate::http::Http,
+    lock: &pk_cli_auth::refresh_lock::RefreshLock,
+    store: &dyn pk_med_smart::SessionStore,
+    signed_in: &SmartSession,
+) -> Result<Option<bool>, CliError> {
+    // A previous sign-in that does not read is replaced without a revocation.
+    let previous = store.load(&signed_in.account()).ok().flatten();
+    lock.store_signin(|| store.save(signed_in))?;
+    Ok(previous.and_then(|old| crate::logout::revoke_replaced(http, signed_in, &old)))
+}
+
+/// `athena --profile <P> auth login --org <ORG>`, for a remedy.
+fn login_command(profile: &str, org: &str) -> String {
+    format!("athena --profile {profile} auth login --org {org}")
+}
+
 impl Pending {
+    fn login_command(&self) -> String {
+        login_command(&self.profile, &self.org)
+    }
+
     /// The page to open in the browser.
     pub fn start_url(&self) -> String {
         self.start.url.clone()
@@ -128,15 +158,11 @@ impl Pending {
 
     /// Wait for the callback, then trade the code for tokens.
     pub fn finish(self, http: &BlockingTransport, now: u64) -> Result<Outcome, CliError> {
+        let again = self.login_command();
         let code = self
             .signin
             .wait_for_code(self.timeout, |refused| eprintln!("{refused}"))
-            .map_err(|e| {
-                e.with_remedy(format!(
-                    "start again with `athena auth login --org {}`",
-                    self.org
-                ))
-            })?;
+            .map_err(|e| e.with_remedy(format!("start again with `{again}`")))?;
         drop(self.start);
         let oauth = OAuthClient::new(http.clone(), BIN, VERSION);
         let mut session =
@@ -147,10 +173,7 @@ impl Pending {
             .map_err(|e| {
                 // pk_med_smart's remedies are generic ("sign in again").
                 if e.is_auth() {
-                    e.with_remedy(format!(
-                        "start again with `athena auth login --org {}`",
-                        self.org
-                    ))
+                    e.with_remedy(format!("start again with `{again}`"))
                 } else {
                     e
                 }
@@ -168,9 +191,8 @@ impl Pending {
                 no_patient_facts(&session)
             ))
             .with_remedy(format!(
-                "start again with `athena auth login --org {}`, and pick one record on \
-                 athenahealth's \"Select a health record\" page",
-                self.org
+                "start again with `{again}`, and pick one record on athenahealth's \"Select a \
+                 health record\" page"
             )));
         };
         validate_patient_id(&patient)?;
@@ -185,7 +207,7 @@ impl Pending {
                 not_granted.len(),
                 self.scope_version.as_str()
             ))
-            .with_remedy(scope_remedy(&self.org, self.scope_version)));
+            .with_remedy(scope_remedy(&self.profile, &self.org, self.scope_version)));
         }
         let relationship = smart::relationship(session.fhir_user.as_deref(), &patient);
         Ok(Outcome {
@@ -363,31 +385,6 @@ pub fn html_escape(s: &str) -> String {
         }
     }
     out
-}
-
-/// Open `url` in the system browser.
-pub fn open_browser(url: &str) -> Result<(), CliError> {
-    let program = if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-    std::process::Command::new(program)
-        .arg(url)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map_err(|e| CliError::Other(format!("opening the browser with `{program}`: {e}")))
-        .and_then(|status| {
-            if status.success() {
-                Ok(())
-            } else {
-                Err(CliError::Other(format!(
-                    "`{program}` could not open the browser"
-                )))
-            }
-        })
 }
 
 #[cfg(test)]

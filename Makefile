@@ -65,10 +65,14 @@ smoke: build
 	@./target/debug/$(BIN) auth login --help >/dev/null
 	@./target/debug/$(BIN) records export --help >/dev/null
 	@./target/debug/$(BIN) documents download --help >/dev/null
+	@./target/debug/$(BIN) profiles migrate --help >/dev/null
 	@mkdir -p $(SMOKE_HOME)
-	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json auth status >/dev/null
+	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json profiles add smoke >/dev/null
+	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json profiles list >/dev/null
+	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json --profile smoke auth status >/dev/null
 	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json orgs list >/dev/null
-	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json patients list >/dev/null
+	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json --profile smoke patients list >/dev/null
+	@! XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json patients list >/dev/null 2>&1
 	@echo "smoke ok"
 
 verify: fmt-check lint test smoke

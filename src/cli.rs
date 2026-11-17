@@ -1,16 +1,20 @@
 //! The command line: the clap tree and one handler per command.
 
+use std::cell::OnceCell;
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::Shell;
 use pk_cli_auth::refresh_lock::RefreshLock;
+use pk_cli_auth::vault::{KeyStore, Migration, Vault};
 use pk_cli_auth::{AuthLogin, AuthMethod, AuthStatus};
+use pk_cli_config::profile::{self, ProfileName};
 use pk_cli_config::ConfigStore;
 use pk_cli_core::info::{AuthInfo, CliInfo};
-use pk_cli_core::{dates, output, CliError, CommonArgs, Paged, RangeArgs, Reason};
+use pk_cli_core::{confirm, dates, output, CliError, CommonArgs, Paged, RangeArgs, Reason};
 use pk_cli_documents::{DownloadBatch, SavedDocument, SkippedDocument};
 use pk_cli_http::BlockingTransport;
 use pk_cli_selfupdate::{SelfUpdateArgs, Updater};
@@ -24,10 +28,10 @@ use crate::export;
 use crate::fhir::{Client, Live};
 use crate::login;
 use crate::logout;
-use crate::session::{self, SessionEntry, SessionIndex};
+use crate::session::{self, SessionEntry, SessionIndex, Store, PROFILE_ENV};
 use crate::stream::{self, Header};
 use crate::{unix_now, BIN, REPO, VERSION};
-use pk_med_smart::SmartSession;
+use pk_med_smart::{migrate_sessions, ProfileSessions, SessionStore, SignInWindow, SmartSession};
 
 /// Unofficial; not affiliated with or endorsed by athenahealth. A patient's or
 /// caregiver's own records from athenahealth practices, through athenahealth's
@@ -42,6 +46,12 @@ pub struct Cli {
     /// directory state live beside it.
     #[arg(long, global = true, env = "ATHENA_CONFIG", value_name = "PATH")]
     pub config: Option<PathBuf>,
+    /// The login profile to run as, one per person who signs in (`athena
+    /// profiles list`); ATHENA_PROFILE when absent. Every command that uses a
+    /// sign-in (auth, patients, records, documents, api) needs one, with no
+    /// default; the others refuse it.
+    #[arg(long, global = true, value_name = "NAME")]
+    pub profile: Option<String>,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -51,6 +61,9 @@ pub enum Command {
     /// Sign in, see who is signed in, sign out.
     #[command(subcommand)]
     Auth(AuthCmd),
+    /// Login profiles, one per person who signs in (profile-list/v1).
+    #[command(subcommand)]
+    Profiles(ProfilesCmd),
     /// Non-secret settings: client ids, redirect ports, practice profiles.
     #[command(subcommand)]
     Config(ConfigCmd),
@@ -80,12 +93,55 @@ pub enum Command {
 #[derive(Args, Debug, Clone, Default)]
 pub struct Select {
     /// The patient: its FHIR id or the label given at sign-in. Optional when
-    /// only one is signed in.
+    /// the profile has only one sign-in.
     #[arg(long, value_name = "ID|LABEL")]
     pub patient: Option<String>,
     /// The practice profile, when the patient is signed in at more than one.
     #[arg(long, value_name = "ORG")]
     pub org: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProfilesCmd {
+    /// The configured profiles (profile-list/v1), and any sign-in stored
+    /// before v0.4.0 that is in none.
+    #[command(visible_alias = "ls")]
+    List,
+    /// Add a profile: one per person who signs in (`adult1`).
+    Add {
+        /// 1 to 32 lowercase letters, digits, `-` or `_`.
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
+    /// Sign out a profile's sign-ins, revoking their tokens, and remove it
+    /// with its browser profile (profile-remove/v1).
+    Remove {
+        /// The profile to remove (not `--profile`).
+        #[arg(value_name = "NAME")]
+        name: String,
+        /// Do not ask first.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Move sign-ins stored before v0.4.0 into a profile (profile-migrate/v1).
+    /// No sign-in, and no request unless it replaces a sign-in the profile
+    /// already holds, whose own tokens are then revoked; a newly built athena
+    /// asks the Keychain once for each sign-in it moves.
+    Migrate(MigrateCmd),
+}
+
+#[derive(Args, Debug)]
+pub struct MigrateCmd {
+    /// The profile to move them into (not `--profile`); added when it is new.
+    #[arg(value_name = "NAME")]
+    pub name: String,
+    /// The practice profile the sign-ins belong to.
+    #[arg(long, value_name = "ORG")]
+    pub org: String,
+    /// A sign-in to move, by patient id or label (`athena profiles list`
+    /// shows them); repeat for each.
+    #[arg(long = "patient", value_name = "ID|LABEL", required = true)]
+    pub patients: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -124,7 +180,8 @@ pub struct LoginCmd {
     /// later commands can say `--patient <LABEL>`.
     #[arg(long, value_name = "LABEL")]
     pub label: Option<String>,
-    /// Print the sign-in page's address instead of opening the browser.
+    /// Print the sign-in page's address instead of opening the profile's
+    /// browser window.
     #[arg(long)]
     pub no_browser: bool,
     /// Minutes to wait for the sign-in.
@@ -329,14 +386,59 @@ pub struct ApiCmd {
     pub select: Select,
 }
 
-/// Paths and output mode shared by every handler.
+/// The lock beside the session index that every write of it holds.
+const INDEX_LOCK: &str = ".sessions.lock";
+
+/// Paths, output mode and the profile flag, shared by every handler.
 struct Ctx {
     json: bool,
     quiet: bool,
+    interactive: bool,
     store: ConfigStore,
+    /// `--profile`, unchecked.
+    profile: Option<String>,
+    /// One vault per process, so its key is read from the keychain once.
+    vault: OnceCell<Arc<Vault>>,
 }
 
 impl Ctx {
+    /// The login profile this command runs as: `--profile`, else
+    /// ATHENA_PROFILE, and configured. Exit 2 otherwise, before any keychain
+    /// read or request.
+    fn profile(&self, config: &Config) -> Result<ProfileName, CliError> {
+        profile::resolve(self.profile.as_deref(), PROFILE_ENV, &config.profiles, BIN)
+    }
+
+    fn vault(&self) -> Result<Arc<Vault>, CliError> {
+        if let Some(vault) = self.vault.get() {
+            return Ok(vault.clone());
+        }
+        let vault = session::vault(&self.state_dir()?)?;
+        Ok(self.vault.get_or_init(|| vault).clone())
+    }
+
+    /// `profile`'s sign-ins in the vault.
+    fn sessions(&self, profile: &ProfileName) -> Result<Store, CliError> {
+        Ok(session::profile_store(self.vault()?, profile.clone()))
+    }
+
+    /// Change the session index as it is on disk now: read, change and
+    /// write it under a lock of its own, so a sign-in, relabel or sign-out in
+    /// another process meanwhile stands. Nothing is written when `change`
+    /// fails.
+    fn update_index<R>(
+        &self,
+        change: impl FnOnce(&mut SessionIndex) -> Result<R, CliError>,
+    ) -> Result<R, CliError> {
+        let dir = self.state_dir()?;
+        RefreshLock::at(dir.join(INDEX_LOCK)).hold(|| {
+            let mut index = SessionIndex::load_in(&dir)?;
+            let result = change(&mut index)?;
+            index.save(&dir.join(session::INDEX_FILE))?;
+            Ok(result)
+        })
+    }
+
     fn config_path(&self) -> Result<PathBuf, CliError> {
         self.store.path()
     }
@@ -349,8 +451,9 @@ impl Ctx {
             .unwrap_or_else(|| PathBuf::from(".")))
     }
 
+    #[cfg(test)]
     fn sessions_path(&self) -> Result<PathBuf, CliError> {
-        Ok(self.state_dir()?.join("sessions.json"))
+        Ok(self.state_dir()?.join(session::INDEX_FILE))
     }
 
     fn directory_path(&self) -> Result<PathBuf, CliError> {
@@ -370,7 +473,7 @@ impl Ctx {
     }
 
     fn index(&self) -> Result<SessionIndex, CliError> {
-        SessionIndex::load(&self.sessions_path()?)
+        SessionIndex::load_in(&self.state_dir()?)
     }
 
     fn note(&self, message: impl AsRef<str>) {
@@ -399,13 +502,33 @@ pub fn run(cli: Cli) -> Result<(), CliError> {
     let ctx = Ctx {
         json: cli.common.json,
         quiet: cli.common.quiet,
+        interactive: cli.common.interactive(),
         store: ConfigStore::new(BIN).with_override(cli.config.clone()),
+        profile: cli.profile.clone(),
+        vault: OnceCell::new(),
     };
+    let takes_profile = matches!(
+        cli.command,
+        Command::Auth(_)
+            | Command::Patients(_)
+            | Command::Records(_)
+            | Command::Documents(_)
+            | Command::Api(_)
+    );
+    if cli.profile.is_some() && !takes_profile {
+        return Err(CliError::Usage(
+            "--profile is for the commands that use a sign-in (auth, patients, records, \
+             documents, api); `profiles remove` and `profiles migrate` take the profile as \
+             their NAME"
+                .into(),
+        ));
+    }
     match cli.command {
         Command::Auth(AuthCmd::Login(args)) => auth_login(&ctx, args),
         Command::Auth(AuthCmd::Status(select)) => auth_status(&ctx, &select),
         Command::Auth(AuthCmd::Logout(args)) => auth_logout(&ctx, args),
         Command::Auth(AuthCmd::Relabel(args)) => auth_relabel(&ctx, args),
+        Command::Profiles(cmd) => profiles_cmd(&ctx, cmd),
         Command::Config(cmd) => config_cmd(&ctx, cmd),
         Command::Orgs(cmd) => orgs(&ctx, cmd),
         Command::Patients(PatientsCmd::List { org }) => patients_list(&ctx, org.as_deref()),
@@ -438,9 +561,20 @@ fn info(ctx: &Ctx) {
         AuthInfo {
             required: true,
             method: "browser-session".into(),
-            login_hint: Some("athena auth login --org <ORG> [--label <LABEL>]".into()),
+            login_hint: Some(
+                "athena --profile <NAME> auth login --org <ORG> [--label <LABEL>]".into(),
+            ),
         },
-        &["orgs", "auth", "patients", "records", "documents", "api"],
+        &[
+            "orgs",
+            "profiles",
+            "auth",
+            "patients",
+            "records",
+            "documents",
+            "api",
+            pk_med_records::LOGIN_PROFILES,
+        ],
     )
     .with_profiles(&["health-records/v1", pk_cli_documents::PROFILE]);
     // Always JSON: `info` is for machines (SPEC v1 §1.6).
@@ -471,11 +605,10 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
         validate_label("--label", label)?;
     }
     let config = ctx.load()?;
+    let profile = ctx.profile(&config)?;
     let practice = config.practice(&args.org)?;
     let client_id = config.client_id_for(&practice)?;
     let ports = config.redirect_ports();
-    let sessions_path = ctx.sessions_path()?;
-    let mut index = SessionIndex::load(&sessions_path)?;
 
     let http = BlockingTransport::new()?;
     let lock = RefreshLock::for_binary(BIN)?;
@@ -484,6 +617,7 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
     let pending = login::prepare(
         &http,
         &login::Request {
+            profile: profile.as_str(),
             org: &args.org,
             practice: &practice,
             org_name: &org_name,
@@ -494,30 +628,45 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
         },
     )?;
     let url = pending.start_url();
-    if args.no_browser {
-        eprintln!("Open {url} in a browser to sign in to {org_name}.");
+    let window = if args.no_browser {
+        eprintln!("Open {url} in a browser to sign in to {org_name} as profile {profile}.");
+        None
     } else {
-        ctx.note(format!("Opening {url} to sign in to {org_name}."));
-        if let Err(e) = login::open_browser(&url) {
-            eprintln!("{e}; open {url} in a browser to sign in.");
+        ctx.note(format!(
+            "Opening profile {profile}'s browser window to sign in to {org_name}."
+        ));
+        match SignInWindow::open_at(BIN, &profile, &url, &[]) {
+            Ok(window) => Some(window),
+            Err(e) => {
+                eprintln!(
+                    "{e}; open {url} in a browser to sign in. A browser where another \
+                     profile's login is signed in to athenahealth signs in as that login: \
+                     use a private window."
+                );
+                None
+            }
         }
-    }
-    let outcome = pending.finish(&http, unix_secs())?;
+    };
+    let finished = pending.finish(&http, unix_secs());
+    // Chrome quits gracefully, so the profile keeps the cookies it received.
+    drop(window);
+    let outcome = finished?;
     let not_granted = outcome.not_granted;
     if !not_granted.is_empty() {
         eprintln!(
             "warning: athenahealth did not grant reading {}; each export reports them as \
              forbidden skips. To fix it, {}",
             not_granted.join(", "),
-            login::scope_remedy(&args.org, config.scope_version())
+            login::scope_remedy(profile.as_str(), &args.org, config.scope_version())
         );
     }
     let signed_in = outcome.session;
     let patient = signed_in.patient.clone().unwrap_or_default();
-    let store = session::keychain();
-    lock.store_signin(|| store.save(&signed_in))?;
+    let store = ctx.sessions(&profile)?;
+    let replaced_revoked = login::store_replacing(&http, &lock, &*store, &signed_in)?;
 
     let mut entry = SessionEntry {
+        profile: Some(profile.to_string()),
         org: args.org.clone(),
         patient: patient.clone(),
         label: args.label.clone(),
@@ -526,24 +675,44 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
         fhir_base: signed_in.fhir_base.clone(),
         stored_at: dates::fmt_rfc3339(unix_now()),
         signin_expires_at: Some(rfc3339(session::signin_expires_at(&signed_in))),
+        login: session::login_fingerprint(&signed_in),
     };
-    // A sign-in that keeps the label of another patient at this practice
-    // takes it over.
-    if let Some(label) = &args.label {
-        for other in index.sessions.iter_mut() {
-            if other.org == args.org
-                && other.patient != patient
-                && other.label.as_deref() == Some(label)
-            {
-                other.label = None;
+    let login_matches = ctx.update_index(|index| {
+        let matches = login_matches_profile(index, &entry);
+        // A sign-in that keeps the label of another patient at this practice
+        // in this profile takes it over.
+        if let Some(label) = &entry.label {
+            for other in index.sessions.iter_mut() {
+                if other.profile == entry.profile
+                    && other.org == entry.org
+                    && other.patient != entry.patient
+                    && other.label.as_deref() == Some(label)
+                {
+                    other.label = None;
+                }
             }
         }
+        index.upsert(entry.clone());
+        Ok(matches)
+    })?;
+    if login_matches == Some(false) {
+        eprintln!(
+            "warning: this sign-in came from another athenahealth login than profile \
+             {profile}'s other sign-ins. If it is another person's, sign it out with `athena \
+             --profile {profile} auth logout --org {org} --patient {patient}` and sign in in \
+             their profile's window (`athena --profile <NAME> auth login --org {org}`).",
+            org = entry.org
+        );
     }
-    index.upsert(entry.clone());
-    index.save(&sessions_path)?;
 
     // Prove the session with one read; the record itself is discarded.
-    let live = Live::start(store, lock, http.clone(), signed_in.clone())?;
+    let live = Live::start_in(
+        Some(profile.as_str()),
+        store,
+        lock,
+        http.clone(),
+        signed_in.clone(),
+    )?;
     let client = Client::new(http, live)?;
     let verified = match client.read("Patient", &patient) {
         Ok(_) => true,
@@ -559,12 +728,12 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
     let after = client.session();
     if renewed(&signed_in, &after) {
         entry.signin_expires_at = Some(rfc3339(session::signin_expires_at(&after)));
-        index.upsert(entry.clone());
-        index.save(&sessions_path)?;
+        note_renewal(ctx, &entry, &signed_in, &after);
     }
 
     let mut value = AuthLogin::stored(verified).to_json();
     if let Value::Object(map) = &mut value {
+        map.insert("profile".into(), json!(profile.as_str()));
         map.insert("org".into(), json!(entry.org));
         map.insert("patient".into(), json!(entry.patient));
         if let Some(label) = &entry.label {
@@ -575,12 +744,18 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
         }
         map.insert("signin_expires_at".into(), json!(entry.signin_expires_at));
         map.insert("types_not_granted".into(), json!(not_granted));
+        if let Some(matches) = login_matches {
+            map.insert("login_matches_profile".into(), json!(matches));
+        }
+        if let Some(revoked) = replaced_revoked {
+            map.insert("replaced".into(), json!({ "revoked": revoked }));
+        }
     }
     if ctx.json {
         output::json(&value);
     } else {
         println!(
-            "Signed in to {org_name}: patient {}{}{}.",
+            "Signed in to {org_name} as profile {profile}: patient {}{}{}.",
             entry.patient,
             entry
                 .label
@@ -593,6 +768,16 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
             }
         );
         println!("Verified: {}", if verified { "yes" } else { "no" });
+        if let Some(revoked) = replaced_revoked {
+            println!(
+                "Replaced: an earlier sign-in for this patient{}",
+                if revoked {
+                    ", its tokens revoked"
+                } else {
+                    "; its tokens could not be revoked and lapse on their own"
+                }
+            );
+        }
         if let Some(at) = &entry.signin_expires_at {
             println!("Sign in again by: {at}");
         }
@@ -600,14 +785,39 @@ fn auth_login(ctx: &Ctx, args: LoginCmd) -> Result<(), CliError> {
     Ok(())
 }
 
+/// Whether `entry`'s login is the one `index`'s other sign-ins in its
+/// profile came from, in the same environment (an issuer of its own). `None`
+/// when there is nothing to compare: no fingerprint, or no other sign-in
+/// with one.
+fn login_matches_profile(index: &SessionIndex, entry: &SessionEntry) -> Option<bool> {
+    let login = entry.login.as_deref()?;
+    let others: Vec<&str> = index
+        .matching(entry.profile.as_deref(), None, None)
+        .into_iter()
+        .filter(|e| e.environment == entry.environment)
+        .filter(|e| !(e.org == entry.org && e.patient == entry.patient))
+        .filter_map(|e| e.login.as_deref())
+        .collect();
+    if others.is_empty() {
+        None
+    } else {
+        Some(others.iter().all(|other| *other == login))
+    }
+}
+
 fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
     if let Some(org) = &select.org {
         config::validate_slug(org)?;
     }
+    let profile = ctx.profile(&ctx.load()?)?;
     let index = ctx.index()?;
-    let entries = index.matching(select.patient.as_deref(), select.org.as_deref());
+    let entries = index.matching(
+        Some(profile.as_str()),
+        select.patient.as_deref(),
+        select.org.as_deref(),
+    );
     let now = unix_secs();
-    let store = session::keychain();
+    let store = ctx.sessions(&profile)?;
     let mut sessions = Vec::new();
     let mut any_usable = false;
     for entry in entries {
@@ -621,6 +831,9 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
             row.insert("relationship".into(), json!(rel));
         }
         row.insert("environment".into(), json!(entry.environment));
+        if let Some(login) = &entry.login {
+            row.insert("login".into(), json!(login));
+        }
         match store.load(&entry.key()) {
             Ok(Some(stored)) => {
                 let usable = session::usable(&stored, now);
@@ -651,7 +864,7 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
                 row.insert("usable".into(), json!(false));
                 row.insert("error".into(), json!(e.code()));
                 eprintln!(
-                    "warning: reading the sign-in of {} at {} from the keychain failed: {}",
+                    "warning: reading the sign-in of {} at {} failed: {}",
                     entry.patient,
                     entry.org,
                     e.message()
@@ -664,16 +877,27 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
     status.credential_in_keychain =
         Some(sessions.iter().any(|s| s["credential_in_keychain"] == true));
     status.session_valid = Some(any_usable);
+    let unassigned = index.unassigned();
+    if unassigned > 0 {
+        ctx.note(unassigned_note(unassigned));
+    }
     if ctx.json {
         let mut value = status.to_json();
         if let Value::Object(map) = &mut value {
+            map.insert("profile".into(), json!(profile.as_str()));
             map.insert("sessions".into(), Value::Array(sessions));
+            if unassigned > 0 {
+                map.insert("sign_ins_in_no_profile".into(), json!(unassigned));
+            }
         }
         output::json(&value);
     } else {
         status.render();
+        println!("Profile:       {profile}");
         if sessions.is_empty() {
-            println!("Patients:      none signed in (athena auth login --org <ORG>)");
+            println!(
+                "Patients:      none signed in (athena --profile {profile} auth login --org <ORG>)"
+            );
         } else {
             println!();
             output::table(&output::table_view(
@@ -696,12 +920,12 @@ fn auth_relabel(ctx: &Ctx, args: RelabelCmd) -> Result<(), CliError> {
     config::validate_slug(&args.org)?;
     validate_label("--from", &args.from)?;
     validate_label("--to", &args.to)?;
-    let path = ctx.sessions_path()?;
-    let mut index = SessionIndex::load(&path)?;
-    let entry = index.relabel(&args.org, &args.from, &args.to)?;
-    index.save(&path)?;
+    let profile = ctx.profile(&ctx.load()?)?;
+    let entry =
+        ctx.update_index(|index| index.relabel(profile.as_str(), &args.org, &args.from, &args.to))?;
     let value = json!({
         "schema": "auth-relabel/v1",
+        "profile": profile.as_str(),
         "org": entry.org,
         "patient": entry.patient,
         "from": args.from,
@@ -722,16 +946,24 @@ fn auth_logout(ctx: &Ctx, args: LogoutCmd) -> Result<(), CliError> {
     if let Some(org) = &args.select.org {
         config::validate_slug(org)?;
     }
-    let sessions_path = ctx.sessions_path()?;
-    let mut index = SessionIndex::load(&sessions_path)?;
-    let chosen: Vec<SessionEntry> = index
-        .matching(args.select.patient.as_deref(), args.select.org.as_deref())
+    let profile = ctx.profile(&ctx.load()?)?;
+    let chosen: Vec<SessionEntry> = ctx
+        .index()?
+        .matching(
+            Some(profile.as_str()),
+            args.select.patient.as_deref(),
+            args.select.org.as_deref(),
+        )
         .into_iter()
         .cloned()
         .collect();
     if chosen.is_empty() {
-        return Err(CliError::NotFound("no signed-in patient matches".into())
-            .with_remedy("list them with `athena patients list`"));
+        return Err(CliError::NotFound(format!(
+            "no signed-in patient in profile `{profile}` matches"
+        ))
+        .with_remedy(format!(
+            "list them with `athena --profile {profile} patients list`"
+        )));
     }
     if chosen.len() > 1 && !args.all {
         return Err(CliError::Usage(format!(
@@ -740,7 +972,7 @@ fn auth_logout(ctx: &Ctx, args: LogoutCmd) -> Result<(), CliError> {
         )));
     }
     let http = BlockingTransport::new()?;
-    let store = session::keychain();
+    let store = ctx.sessions(&profile)?;
     let legacy = session::credential_store();
     let lock = RefreshLock::for_binary(BIN)?;
     let mut done = Vec::new();
@@ -759,17 +991,18 @@ fn auth_logout(ctx: &Ctx, args: LogoutCmd) -> Result<(), CliError> {
         });
         match result.left_behind {
             None => {
-                index.remove(&entry.org, &entry.patient);
-                index.save(&sessions_path)?;
+                ctx.update_index(|index| {
+                    Ok(index.remove(Some(profile.as_str()), &entry.org, &entry.patient))
+                })?;
                 done.push(row);
             }
             Some(e) => {
                 // The patient stays in the index, so a second `auth logout`
                 // retries the item.
                 eprintln!(
-                    "warning: {}. Run `athena auth logout` again and allow the Keychain \
-                     prompt, or remove it with `security delete-generic-password -s {} -a \
-                     <profile>/<patient>`",
+                    "warning: {}. Run `athena --profile {profile} auth logout` again and allow \
+                     the Keychain prompt, or remove it with `security delete-generic-password \
+                     -s {} -a <org>/<patient>`",
                     e.message(),
                     session::service()
                 );
@@ -782,6 +1015,7 @@ fn auth_logout(ctx: &Ctx, args: LogoutCmd) -> Result<(), CliError> {
     if ctx.json {
         output::json(&json!({
             "schema": "auth-logout/v1",
+            "profile": profile.as_str(),
             "signed_out": done,
             "incomplete": incomplete,
         }));
@@ -801,7 +1035,7 @@ fn auth_logout(ctx: &Ctx, args: LogoutCmd) -> Result<(), CliError> {
         for row in &incomplete {
             println!(
                 "Did not finish signing out {} at {}: its v0.2.x sign-in is still in the \
-                 Keychain. Run `athena auth logout` again.",
+                 Keychain. Run `athena --profile {profile} auth logout` again.",
                 row["patient"].as_str().unwrap_or_default(),
                 row["org"].as_str().unwrap_or_default(),
             );
@@ -811,6 +1045,388 @@ fn auth_logout(ctx: &Ctx, args: LogoutCmd) -> Result<(), CliError> {
         std::process::exit(e.exit_code());
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------- profiles
+
+fn profiles_cmd(ctx: &Ctx, cmd: ProfilesCmd) -> Result<(), CliError> {
+    match cmd {
+        ProfilesCmd::List => profiles_list(ctx),
+        ProfilesCmd::Add { name } => profiles_add(ctx, &name),
+        ProfilesCmd::Remove { name, force } => profiles_remove(ctx, &name, force),
+        ProfilesCmd::Migrate(args) => profiles_migrate(ctx, args),
+    }
+}
+
+/// A sign-in in no profile, as `profiles list` shows it.
+fn unassigned_row(e: &SessionEntry) -> Value {
+    let mut row = Map::new();
+    row.insert("org".into(), json!(e.org));
+    row.insert("patient".into(), json!(e.patient));
+    if let Some(label) = &e.label {
+        row.insert("label".into(), json!(label));
+    }
+    Value::Object(row)
+}
+
+fn profiles_list(ctx: &Ctx) -> Result<(), CliError> {
+    let config = ctx.load()?;
+    let index = ctx.index()?;
+    let unassigned: Vec<Value> = index
+        .matching(None, None, None)
+        .into_iter()
+        .map(unassigned_row)
+        .collect();
+    let list = config.profiles.list();
+    if ctx.json {
+        let mut value = serde_json::to_value(&list)
+            .map_err(|e| CliError::Other(format!("encoding the profile list: {e}")))?;
+        if let (Value::Object(map), false) = (&mut value, unassigned.is_empty()) {
+            map.insert("unassigned".into(), Value::Array(unassigned));
+        }
+        output::json(&value);
+        return Ok(());
+    }
+    if list.profiles.is_empty() {
+        println!("No profiles. Add one per person who signs in: `athena profiles add <NAME>`.");
+    } else {
+        let rows: Vec<Value> = list
+            .profiles
+            .iter()
+            .map(|p| {
+                json!({
+                    "name": p.name,
+                    "sign_ins": index.matching(Some(&p.name), None, None).len(),
+                })
+            })
+            .collect();
+        output::table(&output::table_view(&rows, &["name", "sign_ins"]));
+    }
+    if !unassigned.is_empty() {
+        println!();
+        println!(
+            "Stored before v0.4.0, in no profile (move each with `athena profiles migrate <NAME> \
+             --org <ORG> --patient <ID|LABEL>`):"
+        );
+        output::table(&output::table_view(
+            &unassigned,
+            &["org", "patient", "label"],
+        ));
+    }
+    Ok(())
+}
+
+fn profiles_add(ctx: &Ctx, name: &str) -> Result<(), CliError> {
+    let name = ProfileName::parse(name)?;
+    let mut config = ctx.load()?;
+    let added = config.profiles.add(name.clone());
+    if added {
+        ctx.save(&config)?;
+    }
+    if ctx.json {
+        output::json(&json!({
+            "schema": "profile-add/v1",
+            "profile": name.as_str(),
+            "added": added,
+        }));
+    } else if added {
+        println!(
+            "Added profile {name}. Sign in with `athena --profile {name} auth login --org <ORG>`."
+        );
+    } else {
+        println!("Profile {name} is already configured.");
+    }
+    Ok(())
+}
+
+fn profiles_remove(ctx: &Ctx, name: &str, force: bool) -> Result<(), CliError> {
+    let name = ProfileName::parse(name)?;
+    let config = ctx.load()?;
+    if !config.profiles.contains(&name) {
+        return Err(CliError::NotFound(format!("no profile `{name}`"))
+            .with_remedy("list them with `athena profiles list`"));
+    }
+    let entries: Vec<SessionEntry> = ctx
+        .index()?
+        .matching(Some(name.as_str()), None, None)
+        .into_iter()
+        .cloned()
+        .collect();
+    let prompt = format!(
+        "Remove profile {name}, signing out its {} sign-in{} and revoking their tokens?",
+        entries.len(),
+        if entries.len() == 1 { "" } else { "s" }
+    );
+    confirm::require_confirmable(force, ctx.interactive, &prompt)?;
+    confirm::confirm(force, &prompt)?;
+
+    let http = BlockingTransport::new()?;
+    let store = ctx.sessions(&name)?;
+    let legacy = session::credential_store();
+    let lock = RefreshLock::for_binary(BIN)?;
+    let mut revoked = 0;
+    let sign_out = |org: &str, patient: &str| -> Result<bool, CliError> {
+        let result = logout::sign_out(&http, &lock, &*store, &legacy, org, patient)?;
+        match result.left_behind {
+            // The profile stays, so `profiles remove` can be run again.
+            Some(e) => Err(e.with_remedy(format!(
+                "run `athena profiles remove {name}` again and allow the Keychain prompt"
+            ))),
+            None => Ok(result.revoked),
+        }
+    };
+    for entry in &entries {
+        revoked += usize::from(sign_out(&entry.org, &entry.patient)?);
+        ctx.update_index(|index| {
+            Ok(index.remove(Some(name.as_str()), &entry.org, &entry.patient))
+        })?;
+    }
+    // Sign-ins in the vault that the index does not name are signed out the
+    // same way, revoked first, rather than deleted with their tokens live,
+    // and counted as they are removed.
+    let vault = ctx.vault()?;
+    let mut not_in_index = 0;
+    for account in ProfileSessions::new(&vault, name.clone()).accounts()? {
+        let result = logout::sign_out_account(&http, &lock, &*store, &account)?;
+        not_in_index += usize::from(result.credential_removed);
+        revoked += usize::from(result.revoked);
+    }
+    let signed_out = entries.len() + not_in_index;
+    let browser_profile_removed =
+        pk_cli_browser::forget_named_profile(BIN, name.as_str()).map_err(CliError::from)?;
+    let mut config = ctx.load()?;
+    config.profiles.remove(&name);
+    ctx.save(&config)?;
+    if ctx.json {
+        output::json(&json!({
+            "schema": "profile-remove/v1",
+            "profile": name.as_str(),
+            "signed_out": signed_out,
+            "revoked": revoked,
+            "not_in_index": not_in_index,
+            "browser_profile_removed": browser_profile_removed,
+        }));
+    } else {
+        println!(
+            "Removed profile {name}: {signed_out} sign-in{} signed out, {revoked} of them \
+             revoked{}.",
+            if signed_out == 1 { "" } else { "s" },
+            if browser_profile_removed {
+                ", its browser profile removed"
+            } else {
+                ""
+            }
+        );
+    }
+    Ok(())
+}
+
+/// One `--patient` of `profiles migrate`: the sign-in to move, or none when
+/// an earlier run moved it already.
+fn migration_source(
+    index: &SessionIndex,
+    profile: &ProfileName,
+    org: &str,
+    patient: &str,
+) -> Result<Option<SessionEntry>, CliError> {
+    let old = index.matching(None, Some(patient), Some(org));
+    let moved = index.matching(Some(profile.as_str()), Some(patient), Some(org));
+    match (old.len(), moved.len()) {
+        (1, _) => Ok(Some(old[0].clone())),
+        (0, 0) => Err(CliError::NotFound(format!(
+            "no sign-in from before v0.4.0 at `{org}` has the id or label `{patient}`"
+        ))
+        .with_remedy("list them with `athena profiles list`")),
+        (0, _) => Ok(None),
+        (_, _) => Err(CliError::Usage(format!(
+            "more than one sign-in at `{org}` matches `{patient}`: name it by its patient id"
+        ))),
+    }
+}
+
+fn profiles_migrate(ctx: &Ctx, args: MigrateCmd) -> Result<(), CliError> {
+    migrate_with(
+        ctx,
+        args,
+        &session::credential_store(),
+        &RefreshLock::for_binary(BIN)?,
+        &BlockingTransport::new()?,
+    )
+}
+
+/// `profiles migrate`, moving items out of `from` under `lock`, and revoking
+/// through `http` a sign-in the move replaces.
+fn migrate_with(
+    ctx: &Ctx,
+    args: MigrateCmd,
+    from: &dyn KeyStore,
+    lock: &RefreshLock,
+    http: &dyn crate::http::Http,
+) -> Result<(), CliError> {
+    let name = ProfileName::parse(&args.name)?;
+    config::validate_slug(&args.org)?;
+    for patient in &args.patients {
+        if patient.is_empty() {
+            return Err(CliError::Usage("--patient needs an id or a label".into()));
+        }
+    }
+    let index = ctx.index()?;
+    let mut chosen: Vec<SessionEntry> = Vec::new();
+    let mut already = 0;
+    for patient in &args.patients {
+        match migration_source(&index, &name, &args.org, patient)? {
+            Some(entry) if !chosen.contains(&entry) => chosen.push(entry),
+            Some(_) => {}
+            None => already += 1,
+        }
+    }
+    // Labels stay distinct within the profile, so --patient <LABEL> names one.
+    for entry in &chosen {
+        if let Some(label) = &entry.label {
+            if index.label_taken(Some(name.as_str()), &entry.org, label, Some(&entry.patient)) {
+                return Err(CliError::Usage(format!(
+                    "the label `{label}` already names a sign-in at `{}` in profile `{name}`",
+                    entry.org
+                ))
+                .with_remedy(format!(
+                    "relabel that one first: `athena --profile {name} auth relabel --org {} \
+                     --from {label} --to <LABEL>`",
+                    entry.org
+                )));
+            }
+        }
+    }
+
+    let mut config = ctx.load()?;
+    let added = config.profiles.add(name.clone());
+    if added {
+        ctx.save(&config)?;
+    }
+    let vault = ctx.vault()?;
+    let sessions = ProfileSessions::new(&vault, name.clone());
+    let mut totals = Migration::default();
+    let mut rows = Vec::new();
+    let mut replaced_revoked = 0;
+    for entry in chosen {
+        let account = entry.key();
+        // When the profile holds this sign-in already, both copies are read
+        // first, so the one the move does not keep can be revoked. (Only
+        // then: reading the old item is a Keychain prompt.)
+        let held = sessions.load(&account).ok().flatten();
+        let old = match held {
+            Some(_) => from
+                .get(&account)?
+                .and_then(|text| pk_med_smart::session::decode_session(text.expose()).ok()),
+            None => None,
+        };
+        // One account per call, so each sign-in's outcome is known.
+        let done = migrate_sessions(from, &sessions, std::slice::from_ref(&account), lock)?;
+        totals.moved += done.moved;
+        totals.kept += done.kept;
+        totals.absent += done.absent;
+        let outcome = if done.moved > 0 {
+            "moved"
+        } else if done.kept > 0 {
+            "kept"
+        } else {
+            "absent"
+        };
+        let login = if outcome == "absent" {
+            None
+        } else {
+            sessions
+                .load(&entry.key())
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(session::login_fingerprint)
+        };
+        ctx.update_index(|index| {
+            let in_profile = index
+                .find_mut(Some(name.as_str()), &entry.org, &entry.patient)
+                .is_some();
+            if outcome == "absent" || in_profile {
+                // Nothing was stored for it, or the profile has its own entry.
+                index.remove(None, &entry.org, &entry.patient);
+            } else if let Some(e) = index.find_mut(None, &entry.org, &entry.patient) {
+                e.profile = Some(name.to_string());
+                e.login = login.clone();
+            }
+            Ok(())
+        })?;
+        let mut row = unassigned_row(&entry);
+        row["outcome"] = json!(outcome);
+        if let (Some(held), Some(old)) = (held, old) {
+            let (kept, dropped) = if done.moved > 0 {
+                (old, held)
+            } else {
+                (held, old)
+            };
+            if let Some(revoked) = logout::revoke_replaced(http, &kept, &dropped) {
+                replaced_revoked += usize::from(revoked);
+                row["replaced"] = json!({ "revoked": revoked });
+            }
+        }
+        rows.push(row);
+    }
+    let logins = distinct_logins(&ctx.index()?, &name);
+    if logins > 1 {
+        eprintln!(
+            "warning: profile {name}'s sign-ins came from {logins} different athenahealth \
+             logins. A profile is one person's: sign out the others with `athena --profile \
+             {name} auth logout --org <ORG> --patient <ID|LABEL>`, and move or sign them in to \
+             their own profile."
+        );
+    }
+    if ctx.json {
+        output::json(&json!({
+            "schema": "profile-migrate/v1",
+            "profile": name.as_str(),
+            "added": added,
+            "moved": totals.moved,
+            "kept": totals.kept,
+            "absent": totals.absent,
+            "already_in_profile": already,
+            "replaced_revoked": replaced_revoked,
+            "logins": logins,
+            "sign_ins": rows,
+        }));
+    } else {
+        println!(
+            "Profile {name}{}: {} moved, {} already in it, {} with nothing stored (sign in again).",
+            if added { " (added)" } else { "" },
+            totals.moved,
+            totals.kept + already,
+            totals.absent
+        );
+        if !rows.is_empty() {
+            output::table(&output::table_view(
+                &rows,
+                &["org", "patient", "label", "outcome"],
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// How many logins a profile's sign-ins came from, by fingerprint, counted
+/// per environment (each has an issuer of its own).
+fn distinct_logins(index: &SessionIndex, profile: &ProfileName) -> usize {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut per_environment: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+    for entry in index.matching(Some(profile.as_str()), None, None) {
+        if let Some(login) = entry.login.as_deref() {
+            per_environment
+                .entry(entry.environment.to_string())
+                .or_default()
+                .insert(login);
+        }
+    }
+    per_environment
+        .values()
+        .map(BTreeSet::len)
+        .max()
+        .unwrap_or(0)
 }
 
 // ---------------------------------------------------------------- config
@@ -1093,9 +1709,14 @@ fn patients_list(ctx: &Ctx, org: Option<&str>) -> Result<(), CliError> {
     if let Some(org) = org {
         config::validate_slug(org)?;
     }
+    let profile = ctx.profile(&ctx.load()?)?;
     let index = ctx.index()?;
+    let unassigned = index.unassigned();
+    if unassigned > 0 {
+        ctx.note(unassigned_note(unassigned));
+    }
     let items: Vec<Value> = index
-        .matching(None, org)
+        .matching(Some(profile.as_str()), None, org)
         .into_iter()
         .map(|e| {
             let mut row = Map::new();
@@ -1134,20 +1755,49 @@ fn patients_list(ctx: &Ctx, org: Option<&str>) -> Result<(), CliError> {
 
 // ---------------------------------------------------------------- reads
 
-/// The selected session's index entry and token set, before any network.
-/// The indexed sign-in `select` names, without touching the keychain.
-fn resolve_entry(ctx: &Ctx, select: &Select) -> Result<SessionEntry, CliError> {
+/// A selected sign-in: its profile's store, its index entry and its session.
+struct Opened {
+    store: Store,
+    entry: SessionEntry,
+    stored: SmartSession,
+}
+
+/// The indexed sign-in `select` names in the command's profile, without
+/// touching the keychain or the network.
+fn resolve_entry(ctx: &Ctx, select: &Select) -> Result<(ProfileName, SessionEntry), CliError> {
     if let Some(org) = &select.org {
         config::validate_slug(org)?;
     }
-    ctx.index()?
-        .resolve(select.patient.as_deref(), select.org.as_deref())
+    let profile = ctx.profile(&ctx.load()?)?;
+    let entry = ctx.index()?.resolve(
+        profile.as_str(),
+        select.patient.as_deref(),
+        select.org.as_deref(),
+    )?;
+    Ok((profile, entry))
 }
 
-fn open_session(ctx: &Ctx, select: &Select) -> Result<(SessionEntry, SmartSession), CliError> {
-    let entry = resolve_entry(ctx, select)?;
-    let stored = session::load(&*session::keychain(), &entry)?;
-    Ok((entry, stored))
+/// The selected sign-in read from the vault, before any network.
+fn open_session(ctx: &Ctx, select: &Select) -> Result<Opened, CliError> {
+    let (profile, entry) = resolve_entry(ctx, select)?;
+    let store = ctx.sessions(&profile)?;
+    let stored = session::load(&*store, &entry)?;
+    Ok(Opened {
+        store,
+        entry,
+        stored,
+    })
+}
+
+/// The note for sign-ins stored before v0.4.0, which are in no profile.
+fn unassigned_note(count: usize) -> String {
+    format!(
+        "note: {count} sign-in{} stored before v0.4.0 {} in no profile; `athena profiles list` \
+         shows them, and `athena profiles migrate <NAME> --org <ORG> --patient <ID|LABEL>` moves \
+         each into its person's profile",
+        if count == 1 { "" } else { "s" },
+        if count == 1 { "is" } else { "are" }
+    )
 }
 
 /// Whether a grant answered, or was refused, between `before` and `after`.
@@ -1157,14 +1807,16 @@ fn renewed(before: &SmartSession, after: &SmartSession) -> bool {
 
 /// A read client over a stored sign-in, its token renewed first when it has
 /// lapsed or was refused. A refused renewal is recorded in the index.
-fn start_client(
-    ctx: &Ctx,
-    entry: &SessionEntry,
-    stored: &SmartSession,
-) -> Result<Client, CliError> {
+fn start_client(ctx: &Ctx, opened: &Opened) -> Result<Client, CliError> {
+    let Opened {
+        store,
+        entry,
+        stored,
+    } = opened;
     let started = BlockingTransport::new().and_then(|http| {
-        let live = Live::start(
-            session::keychain(),
+        let live = Live::start_in(
+            entry.profile.as_deref(),
+            store.clone(),
             RefreshLock::for_binary(BIN)?,
             http.clone(),
             stored.clone(),
@@ -1191,23 +1843,16 @@ fn note_renewal(ctx: &Ctx, entry: &SessionEntry, before: &SmartSession, after: &
     if !renewed(before, after) {
         return;
     }
-    let Ok(path) = ctx.sessions_path() else {
-        return;
-    };
-    let Ok(mut index) = SessionIndex::load(&path) else {
-        return;
-    };
     // Only the expiry changes, on the entry as it is now: a relabel or a
-    // sign-out since this command started stands.
-    let Some(current) = index
-        .sessions
-        .iter_mut()
-        .find(|s| s.org == entry.org && s.patient == entry.patient)
-    else {
-        return;
-    };
-    current.signin_expires_at = Some(rfc3339(session::signin_expires_at(after)));
-    let _ = index.save(&path);
+    // sign-out since this command started stands. Best effort: the vault
+    // already holds the renewal.
+    let _ = ctx.update_index(|index| {
+        if let Some(current) = index.find_mut(entry.profile.as_deref(), &entry.org, &entry.patient)
+        {
+            current.signin_expires_at = Some(rfc3339(session::signin_expires_at(after)));
+        }
+        Ok(())
+    });
 }
 
 fn records_export(ctx: &Ctx, args: ExportCmd) -> Result<(), CliError> {
@@ -1279,12 +1924,12 @@ struct Prepared {
 }
 
 fn prepare_export(ctx: &Ctx, args: &ExportCmd) -> Result<Prepared, CliError> {
-    let (entry, stored) = open_session(ctx, &args.select)?;
-    let header = stream_header(ctx, &entry, args.since.as_deref())?;
-    let client = start_client(ctx, &entry, &stored)?;
+    let opened = open_session(ctx, &args.select)?;
+    let header = stream_header(ctx, &opened.entry, args.since.as_deref())?;
+    let client = start_client(ctx, &opened)?;
     Ok(Prepared {
-        entry,
-        stored,
+        entry: opened.entry,
+        stored: opened.stored,
         header,
         client,
     })
@@ -1323,7 +1968,7 @@ fn export_to_stdout(ctx: &Ctx, args: &ExportCmd) -> Result<(), CliError> {
 fn export_to_dir(ctx: &Ctx, args: &ExportCmd) -> Result<(), CliError> {
     let dir = args.out.clone().unwrap_or_default();
     // Resolve the session first, so a bad --patient creates no file.
-    let entry = resolve_entry(ctx, &args.select)?;
+    let (profile, entry) = resolve_entry(ctx, &args.select)?;
     if !synthetic(&entry.fhir_base) {
         let who = entry.label.clone().unwrap_or_else(|| entry.patient.clone());
         return Err(CliError::Usage(format!(
@@ -1332,8 +1977,9 @@ fn export_to_dir(ctx: &Ctx, args: &ExportCmd) -> Result<(), CliError> {
             entry.org
         ))
         .with_remedy(format!(
-            "pipe them into medrec instead: `medrec import --from {BIN} --patient {who}`, \
-             which runs `{BIN} records export --patient {who} --ndjson`"
+            "pipe them into medrec instead: `medrec import --from {BIN} --from-profile {profile} \
+             --patient {who}`, which runs `{BIN} --profile {profile} records export --patient \
+             {who} --ndjson`"
         )));
     }
     let Prepared {
@@ -1418,8 +2064,9 @@ fn documents_cmd(ctx: &Ctx, cmd: DocumentsCmd) -> Result<(), CliError> {
     match cmd {
         DocumentsCmd::List { select, range } => {
             range.validate()?;
-            let (entry, stored) = open_session(ctx, &select)?;
-            let client = start_client(ctx, &entry, &stored)?;
+            let opened = open_session(ctx, &select)?;
+            let client = start_client(ctx, &opened)?;
+            let (entry, stored) = (opened.entry, opened.stored);
             let listing = documents::list(&client, &range);
             note_renewal(ctx, &entry, &stored, &client.session());
             let listing = listing?;
@@ -1460,17 +2107,17 @@ fn documents_cmd(ctx: &Ctx, cmd: DocumentsCmd) -> Result<(), CliError> {
                     });
                 }
             }
-            let (entry, stored) = open_session(ctx, &select)?;
+            let opened = open_session(ctx, &select)?;
             if (all || documents::is_dir_target(&out)) && !out.is_dir() {
                 create_private_dir(&out)?;
             }
-            let client = start_client(ctx, &entry, &stored)?;
+            let client = start_client(ctx, &opened)?;
             let result = if all {
                 download_all(ctx, &client, &out, &range)
             } else {
                 download_one(ctx, &client, id.as_deref().unwrap_or_default(), &out)
             };
-            note_renewal(ctx, &entry, &stored, &client.session());
+            note_renewal(ctx, &opened.entry, &opened.stored, &client.session());
             result
         }
     }
@@ -1573,18 +2220,18 @@ fn api(ctx: &Ctx, args: ApiCmd) -> Result<(), CliError> {
         return Err(CliError::Usage("api needs a path".into()));
     }
     let path = args.path.trim();
-    let (entry, stored) = open_session(ctx, &args.select)?;
+    let opened = open_session(ctx, &args.select)?;
     // A URL elsewhere is the caller's mistake, refused before the token
     // could travel: exit 2.
-    if path.contains("://") && !crate::http::same_origin(path, &entry.fhir_base) {
+    if path.contains("://") && !crate::http::same_origin(path, &opened.entry.fhir_base) {
         return Err(CliError::Usage(
             "that URL is not on the signed-in FHIR server; athena sends its token nowhere else"
                 .into(),
         ));
     }
-    let client = start_client(ctx, &entry, &stored)?;
+    let client = start_client(ctx, &opened)?;
     let result = client.get_raw(path.trim_start_matches('/'));
-    note_renewal(ctx, &entry, &stored, &client.session());
+    note_renewal(ctx, &opened.entry, &opened.stored, &client.session());
     let body = result?;
     match serde_json::from_str::<Value>(&body) {
         Ok(value) => output::json(&value),
@@ -1605,12 +2252,16 @@ mod tests {
         let ctx = Ctx {
             json: true,
             quiet: true,
+            interactive: false,
             store: ConfigStore::new(BIN).with_override(Some(dir.join("config.json"))),
+            profile: Some("adult1".into()),
+            vault: OnceCell::new(),
         };
         let now = unix_secs();
         let mut before = session::test_session("mock", "a-900001.E-1001", None, now);
         before.tokens.refresh_token = Some("refresh-1".into());
         let entry = SessionEntry {
+            profile: Some("adult1".into()),
             org: "mock".into(),
             patient: "a-900001.E-1001".into(),
             label: None,
@@ -1619,6 +2270,7 @@ mod tests {
             fhir_base: before.fhir_base.clone(),
             stored_at: rfc3339(now),
             signin_expires_at: Some(rfc3339(session::signin_expires_at(&before))),
+            login: None,
         };
         let mut index = SessionIndex::default();
         index.upsert(entry.clone());
@@ -1677,6 +2329,262 @@ mod tests {
         ] {
             assert!(!synthetic(base), "{base}");
         }
+    }
+
+    /// A context over a temp directory, its vault keyed in memory.
+    fn test_ctx(dir: &Path) -> Ctx {
+        let ctx = Ctx {
+            json: true,
+            quiet: true,
+            interactive: false,
+            store: ConfigStore::new(BIN).with_override(Some(dir.join("config.json"))),
+            profile: None,
+            vault: OnceCell::new(),
+        };
+        let vault = Vault::new(pk_cli_auth::vault::MemoryKeys::new(), dir.join("vault"));
+        let _ = ctx.vault.set(Arc::new(vault));
+        ctx
+    }
+
+    fn old_entry(patient: &str, label: &str) -> SessionEntry {
+        SessionEntry {
+            profile: None,
+            org: "wide".into(),
+            patient: patient.into(),
+            label: Some(label.into()),
+            relationship: Some("self".into()),
+            environment: Environment::Production,
+            fhir_base: "https://api.platform.athenahealth.com/fhir/r4".into(),
+            stored_at: "2026-01-01T00:00:00Z".into(),
+            signin_expires_at: None,
+            login: None,
+        }
+    }
+
+    /// A session whose ID token names login `sub`, as a v0.3 keychain item.
+    fn old_item(keys: &dyn KeyStore, patient: &str, sub: &str) {
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let mut s = session::test_session("wide", patient, None, 1_000);
+        s.tokens.id_token = Some(format!(
+            "{}.{}.sig",
+            b64.encode(br#"{"alg":"RS256"}"#),
+            b64.encode(json!({"iss": "https://idp.example.test", "sub": sub}).to_string())
+        ));
+        let text = serde_json::to_string(&s).unwrap();
+        keys.set(
+            &session::key("wide", patient),
+            &pk_cli_secrets::Secret::new(text),
+        )
+        .unwrap();
+    }
+
+    /// Revocations, answered 200 and counted.
+    #[derive(Default)]
+    struct Revocations(std::sync::Mutex<Vec<String>>);
+
+    impl crate::http::Http for Revocations {
+        fn call(
+            &self,
+            request: pk_cli_core::transport::HttpRequest,
+        ) -> Result<pk_cli_core::transport::HttpResponse, CliError> {
+            self.0.lock().unwrap().push(request.url.clone());
+            Ok(pk_cli_core::transport::HttpResponse::new(200, ""))
+        }
+    }
+
+    fn migrate(
+        ctx: &Ctx,
+        keys: &dyn KeyStore,
+        name: &str,
+        patients: &[&str],
+    ) -> Result<(), CliError> {
+        migrate_revoking(ctx, keys, name, patients, &Revocations::default())
+    }
+
+    fn migrate_revoking(
+        ctx: &Ctx,
+        keys: &dyn KeyStore,
+        name: &str,
+        patients: &[&str],
+        http: &Revocations,
+    ) -> Result<(), CliError> {
+        let lock = RefreshLock::at(ctx.state_dir().unwrap().join("refresh.lock"));
+        migrate_with(
+            ctx,
+            MigrateCmd {
+                name: name.into(),
+                org: "wide".into(),
+                patients: patients.iter().map(|p| p.to_string()).collect(),
+            },
+            keys,
+            &lock,
+            http,
+        )
+    }
+
+    #[test]
+    fn migrate_revokes_the_copy_it_does_not_keep() {
+        use pk_cli_auth::vault::MemoryKeys;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(dir.path());
+        let keys = MemoryKeys::new();
+        let mut index = SessionIndex::default();
+        index.upsert(old_entry("a-1.E-1", "newborn"));
+        index.save(&ctx.sessions_path().unwrap()).unwrap();
+        // The profile signed in again after the upgrade: an older copy in the
+        // vault, and the v0.3 item, newer, with other tokens.
+        let profile = ProfileName::parse("adult1").unwrap();
+        let mut config = ctx.load().unwrap();
+        config.profiles.add(profile.clone());
+        ctx.save(&config).unwrap();
+        let revoke = Some("https://idp.example.test/revoke");
+        let mut held = session::test_session("wide", "a-1.E-1", revoke, 500);
+        held.tokens.access_token = "access-held".into();
+        ctx.sessions(&profile).unwrap().save(&held).unwrap();
+        let mut newer = session::test_session("wide", "a-1.E-1", revoke, 900);
+        newer.tokens.access_token = "access-newer".into();
+        keys.set(
+            &session::key("wide", "a-1.E-1"),
+            &pk_cli_secrets::Secret::new(serde_json::to_string(&newer).unwrap()),
+        )
+        .unwrap();
+
+        let http = Revocations::default();
+        migrate_revoking(&ctx, &keys, "adult1", &["newborn"], &http).unwrap();
+        // The newer copy is kept and the dropped one's access token revoked
+        // (it has no refresh token).
+        let store = ctx.sessions(&profile).unwrap();
+        let kept = store
+            .load(&session::key("wide", "a-1.E-1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.tokens.access_token, "access-newer");
+        assert_eq!(http.0.lock().unwrap().len(), 1);
+        assert!(keys
+            .get(&session::key("wide", "a-1.E-1"))
+            .unwrap()
+            .is_none());
+
+        // Two copies of one grant (a renewal changed only the access token):
+        // nothing is revoked, so the copy kept stays live.
+        let mut index = ctx.index().unwrap();
+        index.upsert(old_entry("a-1.E-2", "adult1"));
+        index.save(&ctx.sessions_path().unwrap()).unwrap();
+        let mut renewed = session::test_session("wide", "a-1.E-2", revoke, 900);
+        renewed.tokens.refresh_token = Some("refresh-shared".into());
+        renewed.tokens.access_token = "access-renewed".into();
+        store.save(&renewed).unwrap();
+        let mut stale = renewed.clone();
+        stale.tokens.access_token = "access-stale".into();
+        stale.tokens.obtained_at = 500;
+        keys.set(
+            &session::key("wide", "a-1.E-2"),
+            &pk_cli_secrets::Secret::new(serde_json::to_string(&stale).unwrap()),
+        )
+        .unwrap();
+        let http = Revocations::default();
+        migrate_revoking(&ctx, &keys, "adult1", &["adult1"], &http).unwrap();
+        assert!(http.0.lock().unwrap().is_empty());
+        let kept = store
+            .load(&session::key("wide", "a-1.E-2"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.tokens.access_token, "access-renewed");
+    }
+    #[test]
+    fn migrate_moves_the_named_sign_ins_into_the_profile_and_only_them() {
+        use pk_cli_auth::vault::MemoryKeys;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(dir.path());
+        let keys = MemoryKeys::new();
+        let mut index = SessionIndex::default();
+        for (patient, label, sub) in [
+            ("a-1.E-1", "newborn", "login-a"),
+            ("a-1.E-2", "adult1", "login-a"),
+            ("a-1.E-3", "adult2", "login-b"),
+        ] {
+            index.upsert(old_entry(patient, label));
+            old_item(&keys, patient, sub);
+        }
+        index.upsert(old_entry("a-1.E-9", "gone"));
+        index.save(&ctx.sessions_path().unwrap()).unwrap();
+
+        migrate(&ctx, &keys, "adult1", &["newborn", "a-1.E-2", "gone"]).unwrap();
+        let config = ctx.load().unwrap();
+        assert!(config
+            .profiles
+            .contains(&ProfileName::parse("adult1").unwrap()));
+        let index = ctx.index().unwrap();
+        let moved = index.matching(Some("adult1"), None, None);
+        assert_eq!(moved.len(), 2);
+        assert!(moved[0].login.is_some() && moved[0].login == moved[1].login);
+        // Nothing was stored for `gone`: it leaves the index.
+        assert!(index.matching(None, Some("gone"), None).is_empty());
+        assert_eq!(index.matching(None, None, None).len(), 1);
+        assert!(keys
+            .get(&session::key("wide", "a-1.E-1"))
+            .unwrap()
+            .is_none());
+        assert!(keys
+            .get(&session::key("wide", "a-1.E-3"))
+            .unwrap()
+            .is_some());
+        let vault = ctx.vault().unwrap();
+        assert_eq!(
+            vault.names().unwrap(),
+            vec![
+                "adult1/wide/a-1.E-1".to_string(),
+                "adult1/wide/a-1.E-2".to_string()
+            ]
+        );
+        let store = ctx
+            .sessions(&ProfileName::parse("adult1").unwrap())
+            .unwrap();
+        assert!(session::load(&*store, moved[0]).is_ok());
+
+        // A second run finds them moved and changes nothing.
+        migrate(&ctx, &keys, "adult1", &["newborn", "adult1"]).unwrap();
+        assert_eq!(ctx.index().unwrap(), index);
+
+        // Another login's sign-in into the same profile: moved, and counted.
+        migrate(&ctx, &keys, "adult1", &["adult2"]).unwrap();
+        let index = ctx.index().unwrap();
+        assert_eq!(
+            distinct_logins(&index, &ProfileName::parse("adult1").unwrap()),
+            2
+        );
+        let entry = index.matching(Some("adult1"), Some("adult2"), None)[0].clone();
+        assert_eq!(login_matches_profile(&index, &entry), Some(false));
+    }
+
+    #[test]
+    fn migrate_refuses_a_label_the_profile_has_and_an_unknown_sign_in() {
+        use pk_cli_auth::vault::MemoryKeys;
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(dir.path());
+        let keys = MemoryKeys::new();
+        let mut index = SessionIndex::default();
+        index.upsert(old_entry("a-1.E-1", "newborn"));
+        let mut taken = old_entry("a-1.E-5", "newborn");
+        taken.profile = Some("adult2".into());
+        index.upsert(taken);
+        index.save(&ctx.sessions_path().unwrap()).unwrap();
+        old_item(&keys, "a-1.E-1", "login-b");
+
+        let err = migrate(&ctx, &keys, "adult2", &["newborn"]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        assert!(err.remedy().unwrap().contains("auth relabel"), "{err}");
+        let err = migrate(&ctx, &keys, "adult2", &["nobody"]).unwrap_err();
+        assert_eq!(err.exit_code(), 4);
+        let err = migrate(&ctx, &keys, "Adult2", &["newborn"]).unwrap_err();
+        assert_eq!(err.exit_code(), 2);
+        // Nothing moved and no profile was added.
+        assert!(keys
+            .get(&session::key("wide", "a-1.E-1"))
+            .unwrap()
+            .is_some());
+        assert!(ctx.load().unwrap().profiles.is_empty());
     }
 
     #[test]

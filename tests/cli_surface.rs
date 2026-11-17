@@ -26,8 +26,37 @@ fn athena(home: &std::path::Path) -> Command {
         .env("HOME", home)
         .env("ATHENA_KEYCHAIN_SERVICE", "piekstra.athena.hermetic-tests")
         .env_remove("ATHENA_CONFIG")
+        .env_remove("ATHENA_PROFILE")
         .env_remove("NO_COLOR");
     cmd
+}
+
+/// The binary as profile `adult1`, through ATHENA_PROFILE.
+fn athena_as(home: &std::path::Path) -> Command {
+    let mut cmd = athena(home);
+    cmd.env("ATHENA_PROFILE", "adult1");
+    cmd
+}
+
+/// A fresh home with profile `adult1` configured.
+fn profiled() -> std::path::PathBuf {
+    let home = tmp();
+    athena(&home)
+        .args(["profiles", "add", "adult1"])
+        .assert()
+        .success();
+    home
+}
+
+/// [`run`] as profile `adult1`.
+fn run_as(home: &std::path::Path, args: &[&str]) -> (i32, Value, String) {
+    let out = athena_as(home).args(args).output().unwrap();
+    let value = serde_json::from_slice(&out.stdout).unwrap_or(Value::Null);
+    (
+        out.status.code().unwrap_or(-1),
+        value,
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
 }
 
 fn json_of(out: &std::process::Output) -> Value {
@@ -97,7 +126,16 @@ fn info_describes_the_cli() {
     );
     assert_eq!(
         v["capabilities"],
-        serde_json::json!(["orgs", "auth", "patients", "records", "documents", "api"])
+        serde_json::json!([
+            "orgs",
+            "profiles",
+            "auth",
+            "patients",
+            "records",
+            "documents",
+            "api",
+            "login-profiles"
+        ])
     );
 }
 
@@ -118,7 +156,7 @@ fn completions_and_no_color_work() {
 
 #[test]
 fn usage_errors_are_exit_2_with_a_json_error() {
-    let home = tmp();
+    let home = profiled();
     for args in [
         vec!["--json", "config", "set", "practice", "Bad Slug"],
         vec![
@@ -202,9 +240,14 @@ fn usage_errors_are_exit_2_with_a_json_error() {
         ],
         vec!["--json", "api", "POST", "Patient"],
     ] {
-        let (code, v, _) = run(&home, &args);
+        let (code, v, _) = run_as(&home, &args);
         assert_eq!(code, 2, "{args:?}: {v}");
         assert_eq!(v["error"]["code"], "usage", "{args:?}");
+        let message = v["error"]["message"].as_str().unwrap_or_default();
+        assert!(
+            !message.contains("--profile <NAME>") && !message.contains("no profile"),
+            "{args:?}: {message}"
+        );
     }
     // clap's own refusals are exit 2 too.
     for args in [
@@ -214,15 +257,15 @@ fn usage_errors_are_exit_2_with_a_json_error() {
         vec!["config", "set", "scope-version", "v3"],
         vec!["no-such-command"],
     ] {
-        let (code, _, _) = run(&home, &args);
+        let (code, _, _) = run_as(&home, &args);
         assert_eq!(code, 2, "{args:?}");
     }
 }
 
 #[test]
 fn a_missing_client_id_names_the_registration_doc() {
-    let home = tmp();
-    let (code, v, _) = run(&home, &["--json", "auth", "login", "--org", "sandbox"]);
+    let home = profiled();
+    let (code, v, _) = run_as(&home, &["--json", "auth", "login", "--org", "sandbox"]);
     assert_eq!(code, 2);
     let message = v["error"]["message"].as_str().unwrap();
     assert!(message.contains("docs/registration.md"), "{message}");
@@ -230,16 +273,16 @@ fn a_missing_client_id_names_the_registration_doc() {
 }
 
 #[test]
-fn an_unknown_profile_is_exit_4() {
-    let home = tmp();
-    let (code, v, _) = run(&home, &["--json", "auth", "login", "--org", "nowhere"]);
+fn an_unknown_practice_profile_is_exit_4() {
+    let home = profiled();
+    let (code, v, _) = run_as(&home, &["--json", "auth", "login", "--org", "nowhere"]);
     assert_eq!(code, 4);
     assert_eq!(v["error"]["code"], "not_found");
 }
 
 #[test]
 fn signed_out_reads_are_exit_3_and_touch_nothing() {
-    let home = tmp();
+    let home = profiled();
     for args in [
         vec!["--json", "documents", "list"],
         vec![
@@ -253,7 +296,7 @@ fn signed_out_reads_are_exit_3_and_touch_nothing() {
         vec!["--json", "api", "GET", "Patient/x"],
         vec!["--json", "records", "export", "-o", "out"],
     ] {
-        let (code, v, _) = run(&home, &args);
+        let (code, v, _) = run_as(&home, &args);
         assert_eq!(code, 3, "{args:?}: {v}");
         assert_eq!(v["error"]["code"], "auth", "{args:?}");
     }
@@ -265,8 +308,8 @@ fn signed_out_reads_are_exit_3_and_touch_nothing() {
 
 #[test]
 fn a_stream_that_fails_before_its_header_writes_nothing_to_stdout() {
-    let home = tmp();
-    let out = athena(&home)
+    let home = profiled();
+    let out = athena_as(&home)
         .args(["--json", "records", "export", "--ndjson"])
         .output()
         .unwrap();
@@ -281,16 +324,17 @@ fn a_stream_that_fails_before_its_header_writes_nothing_to_stdout() {
 
 #[test]
 fn auth_status_signed_out_reads_no_keychain() {
-    let home = tmp();
-    let (code, v, _) = run(&home, &["--json", "auth", "status"]);
+    let home = profiled();
+    let (code, v, _) = run_as(&home, &["--json", "auth", "status"]);
     assert_eq!(code, 0);
     assert_eq!(v["schema"], "auth-status/v1");
+    assert_eq!(v["profile"], "adult1");
     assert_eq!(v["authenticated"], false);
     assert_eq!(v["method"], "browser-session");
     assert_eq!(v["sessions"], serde_json::json!([]));
-    let (code, v, _) = run(&home, &["--json", "auth", "logout"]);
+    let (code, v, _) = run_as(&home, &["--json", "auth", "logout"]);
     assert_eq!(code, 4, "{v}");
-    let (code, v, _) = run(&home, &["--json", "patients", "list"]);
+    let (code, v, _) = run_as(&home, &["--json", "patients", "list"]);
     assert_eq!(code, 0);
     assert_eq!(v["schema"], "patient-list/v1");
     assert_eq!(v["items"], serde_json::json!([]));
@@ -430,13 +474,14 @@ fn self_update_check_is_documented_but_not_run() {
 
 #[test]
 fn relabel_changes_only_the_index() {
-    let home = tmp();
+    let home = profiled();
     let state = home.join("athena");
     std::fs::create_dir_all(&state).unwrap();
-    let index = state.join("sessions.json");
+    let index = state.join("sessions.v2.json");
     std::fs::write(
         &index,
-        serde_json::json!({"sessions": [{
+        serde_json::json!({"version": 2, "sessions": [{
+            "profile": "adult1",
             "org": "clinic",
             "patient": "a-900001.E-1001",
             "label": "unconfirmed",
@@ -448,7 +493,7 @@ fn relabel_changes_only_the_index() {
     )
     .unwrap();
     let relabel = |from: &str, to: &str| {
-        run(
+        run_as(
             &home,
             &[
                 "--json", "auth", "relabel", "--org", "clinic", "--from", from, "--to", to,
@@ -472,12 +517,13 @@ fn relabel_changes_only_the_index() {
 
 #[test]
 fn plain_file_export_refuses_a_real_practice_before_the_keychain() {
-    let home = tmp();
+    let home = profiled();
     let state = home.join("athena");
     std::fs::create_dir_all(&state).unwrap();
     std::fs::write(
-        state.join("sessions.json"),
-        serde_json::json!({"sessions": [{
+        state.join("sessions.v2.json"),
+        serde_json::json!({"version": 2, "sessions": [{
+            "profile": "adult1",
             "org": "clinic",
             "patient": "a-900001.E-1001",
             "label": "kid",
@@ -489,7 +535,7 @@ fn plain_file_export_refuses_a_real_practice_before_the_keychain() {
     )
     .unwrap();
     let out_dir = home.join("out");
-    let (code, json, _) = run(
+    let (code, json, _) = run_as(
         &home,
         &[
             "--json",
@@ -506,7 +552,7 @@ fn plain_file_export_refuses_a_real_practice_before_the_keychain() {
     let message = json["error"]["message"].as_str().unwrap();
     assert!(message.contains("plain file"), "{message}");
     assert!(
-        message.contains("medrec import --from athena --patient kid"),
+        message.contains("medrec import --from athena --from-profile adult1 --patient kid"),
         "{message}"
     );
     assert!(!out_dir.exists());
@@ -514,9 +560,9 @@ fn plain_file_export_refuses_a_real_practice_before_the_keychain() {
 
 #[test]
 fn a_download_path_whose_directory_is_missing_or_a_file_is_refused_first() {
-    let home = tmp();
+    let home = profiled();
     let missing = home.join("missing").join("x.pdf");
-    let (code, json, _) = run(
+    let (code, json, _) = run_as(
         &home,
         &[
             "--json",
@@ -535,7 +581,7 @@ fn a_download_path_whose_directory_is_missing_or_a_file_is_refused_first() {
     let file = home.join("a-file");
     std::fs::write(&file, b"").unwrap();
     let under_file = file.join("x.pdf");
-    let (code, json, _) = run(
+    let (code, json, _) = run_as(
         &home,
         &[
             "--json",
@@ -554,7 +600,7 @@ fn a_download_path_whose_directory_is_missing_or_a_file_is_refused_first() {
 #[test]
 fn org_and_patient_items_read_as_the_profiles_dtos() {
     use pk_med_records::dto::{Organization, PatientContext};
-    let home = tmp();
+    let home = profiled();
     let state = home.join("athena");
     std::fs::create_dir_all(&state).unwrap();
     let bundle = std::fs::read(concat!(
@@ -567,8 +613,9 @@ fn org_and_patient_items_read_as_the_profiles_dtos() {
         .save(&state.join("directory.json"))
         .unwrap();
     std::fs::write(
-        state.join("sessions.json"),
-        serde_json::json!({"sessions": [{
+        state.join("sessions.v2.json"),
+        serde_json::json!({"version": 2, "sessions": [{
+            "profile": "adult1",
             "org": "clinic",
             "patient": "a-900001.E-1001",
             "label": "kid",
@@ -595,7 +642,7 @@ fn org_and_patient_items_read_as_the_profiles_dtos() {
         }
     }
 
-    let (code, v, err) = run(&home, &["--json", "patients", "list"]);
+    let (code, v, err) = run_as(&home, &["--json", "patients", "list"]);
     assert_eq!(code, 0, "{err}");
     assert_eq!(v["schema"], "patient-list/v1");
     let patient: PatientContext = serde_json::from_value(v["items"][0].clone()).unwrap();
@@ -605,4 +652,231 @@ fn org_and_patient_items_read_as_the_profiles_dtos() {
         patient.session.as_deref(),
         Some("smart/clinic/a-900001.E-1001")
     );
+}
+
+#[test]
+fn every_command_that_uses_a_sign_in_needs_a_configured_profile() {
+    let commands: [&[&str]; 9] = [
+        &["--json", "auth", "login", "--org", "sandbox"],
+        &["--json", "auth", "status"],
+        &["--json", "auth", "logout"],
+        &[
+            "--json", "auth", "relabel", "--org", "clinic", "--from", "a", "--to", "b",
+        ],
+        &["--json", "patients", "list"],
+        &["--json", "records", "export", "--ndjson"],
+        &["--json", "documents", "list"],
+        &["--json", "documents", "download", "--all", "-o", "out/"],
+        &["--json", "api", "GET", "Patient/x"],
+    ];
+    // None configured: the remedy is `profiles add`.
+    let home = tmp();
+    for args in commands {
+        let (code, v, err) = run(&home, args);
+        assert_eq!(code, 2, "{args:?}: {v} {err}");
+        let message = v["error"]["message"].as_str().unwrap_or(&err).to_string();
+        assert!(
+            message.contains("--profile <NAME>") && message.contains("ATHENA_PROFILE"),
+            "{args:?}: {message}"
+        );
+    }
+    // Configured, but none named, an empty ATHENA_PROFILE, or an unknown one.
+    let home = profiled();
+    for args in commands {
+        let (code, v, err) = run(&home, args);
+        assert_eq!(code, 2, "{args:?}: {err}");
+        let message = v["error"]["message"].as_str().unwrap_or(&err).to_string();
+        assert!(
+            message.contains("configured: adult1"),
+            "{args:?}: {message}"
+        );
+        let out = athena(&home)
+            .env("ATHENA_PROFILE", "")
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
+        let mut with_flag = vec!["--profile", "adult9"];
+        with_flag.extend_from_slice(args);
+        let (code, v, err) = run(&home, &with_flag);
+        assert_eq!(code, 2, "{args:?}: {err}");
+        let message = v["error"]["message"].as_str().unwrap_or(&err).to_string();
+        assert!(
+            message.contains("no profile `adult9`"),
+            "{args:?}: {message}"
+        );
+    }
+    assert!(!home.join("out").exists());
+    // The flag works after the subcommand too, and wins over the environment.
+    let (code, v, _) = run(&home, &["--json", "auth", "status", "--profile", "adult1"]);
+    assert_eq!(code, 0, "{v}");
+    let out = athena(&home)
+        .env("ATHENA_PROFILE", "adult9")
+        .args(["--json", "--profile", "adult1", "auth", "status"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0));
+    // Commands that use no sign-in take none: the flag is refused, and
+    // ATHENA_PROFILE is left alone.
+    for args in [
+        &["--json", "orgs", "list"][..],
+        &["--json", "profiles", "list"][..],
+        &["info"][..],
+        &["--json", "config", "show"][..],
+    ] {
+        let out = athena(&home)
+            .env("ATHENA_PROFILE", "adult9")
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(0), "{args:?}");
+        let mut with_flag = vec!["--profile", "adult1"];
+        with_flag.extend_from_slice(args);
+        let (code, _, err) = run(&home, &with_flag);
+        assert_eq!(code, 2, "{args:?}: {err}");
+    }
+    let (code, v, _) = run(
+        &home,
+        &[
+            "--json",
+            "--profile",
+            "adult1",
+            "profiles",
+            "remove",
+            "adult1",
+            "--force",
+        ],
+    );
+    assert_eq!(code, 2, "{v}");
+    assert!(v["error"]["message"].as_str().unwrap().contains("NAME"));
+    let (_, v, _) = run(&home, &["--json", "profiles", "list"]);
+    assert_eq!(v["profiles"], serde_json::json!([{"name": "adult1"}]));
+}
+
+#[test]
+fn profiles_are_added_listed_and_removed() {
+    let home = tmp();
+    let (code, v, _) = run(&home, &["--json", "profiles", "list"]);
+    assert_eq!(code, 0);
+    assert_eq!(
+        v,
+        serde_json::json!({"schema": "profile-list/v1", "profiles": []})
+    );
+    let (code, v, _) = run(&home, &["--json", "profiles", "add", "adult2"]);
+    assert_eq!(code, 0, "{v}");
+    assert_eq!(v["schema"], "profile-add/v1");
+    assert_eq!(v["added"], true);
+    let (_, v, _) = run(&home, &["--json", "profiles", "add", "adult2"]);
+    assert_eq!(v["added"], false);
+    run(&home, &["--json", "profiles", "add", "adult1"]);
+    for bad in ["Adult1", "a b", "-x", ""] {
+        let (code, _, _) = run(&home, &["--json", "profiles", "add", bad]);
+        assert_eq!(code, 2, "{bad:?}");
+    }
+    let (_, v, _) = run(&home, &["--json", "profiles", "list"]);
+    assert_eq!(
+        v["profiles"],
+        serde_json::json!([{"name": "adult1"}, {"name": "adult2"}])
+    );
+    let config = std::fs::read_to_string(home.join("athena").join("config.json")).unwrap();
+    assert!(config.contains("\"profiles\""), "{config}");
+
+    // Removing asks first; without a terminal it needs --force.
+    let (code, v, _) = run(&home, &["--json", "profiles", "remove", "adult2"]);
+    assert_eq!(code, 6, "{v}");
+    let (code, v, err) = run(
+        &home,
+        &["--json", "profiles", "remove", "adult2", "--force"],
+    );
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(v["schema"], "profile-remove/v1");
+    assert_eq!(v["signed_out"], 0);
+    assert_eq!(v["browser_profile_removed"], false);
+    let (_, v, _) = run(&home, &["--json", "profiles", "list"]);
+    assert_eq!(v["profiles"], serde_json::json!([{"name": "adult1"}]));
+    let (code, _, _) = run(
+        &home,
+        &["--json", "profiles", "remove", "adult2", "--force"],
+    );
+    assert_eq!(code, 4);
+}
+
+#[test]
+fn sign_ins_from_before_profiles_are_listed_and_moved_by_name() {
+    let home = profiled();
+    let state = home.join("athena");
+    std::fs::write(
+        state.join("sessions.json"),
+        serde_json::json!({"sessions": [
+            {
+                "org": "clinic",
+                "patient": "a-900001.E-1001",
+                "label": "kid",
+                "environment": "production",
+                "fhir_base": "https://api.platform.athenahealth.com/fhir/r4",
+                "stored_at": "2026-01-01T00:00:00Z"
+            },
+            {
+                "org": "clinic",
+                "patient": "a-900001.E-1002",
+                "label": "other",
+                "environment": "production",
+                "fhir_base": "https://api.platform.athenahealth.com/fhir/r4",
+                "stored_at": "2026-01-01T00:00:00Z"
+            }
+        ]})
+        .to_string(),
+    )
+    .unwrap();
+    let (code, v, _) = run(&home, &["--json", "profiles", "list"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["unassigned"].as_array().unwrap().len(), 2);
+    assert_eq!(v["unassigned"][0]["label"], "kid");
+    // A profile's commands do not see them, and say so.
+    let (code, v, err) = run_as(&home, &["--json", "patients", "list"]);
+    assert_eq!(code, 0);
+    assert_eq!(v["items"], serde_json::json!([]));
+    assert!(err.contains("2 sign-ins stored before v0.4.0"), "{err}");
+    let (code, v, _) = run_as(&home, &["--json", "records", "export", "--ndjson"]);
+    assert_eq!(code, 3, "{v}");
+
+    // Refusals come before any keychain read: an unknown sign-in, a bad
+    // name. (Moving one is the unit tests', with keys in memory.)
+    let (code, _, _) = run(
+        &home,
+        &[
+            "--json",
+            "profiles",
+            "migrate",
+            "adult1",
+            "--org",
+            "clinic",
+            "--patient",
+            "nobody",
+        ],
+    );
+    assert_eq!(code, 4);
+    let (code, v, _) = run(
+        &home,
+        &[
+            "--json",
+            "profiles",
+            "migrate",
+            "Adult1",
+            "--org",
+            "clinic",
+            "--patient",
+            "kid",
+        ],
+    );
+    assert_eq!(code, 2, "{v}");
+    let (code, _, _) = run(
+        &home,
+        &["--json", "profiles", "migrate", "adult1", "--org", "clinic"],
+    );
+    assert_eq!(code, 2);
+    // v0.3.x's index is read, never written.
+    let (code, _, _) = run_as(&home, &["--json", "auth", "status"]);
+    assert_eq!(code, 0);
+    assert!(!state.join("sessions.v2.json").exists());
 }

@@ -107,6 +107,8 @@ testing in Preview: practice 80000, patient 14545, on the [Onboarding
 Overview][onboarding] page. With the Preview client id configured:
 
 ```sh
+athena profiles add sandbox
+export ATHENA_PROFILE=sandbox
 athena auth login --org sandbox --label sandbox
 athena auth status --json
 athena records export --patient sandbox --ndjson | head -c 300

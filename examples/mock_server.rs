@@ -4,7 +4,8 @@
 //!
 //! ```text
 //! athena config set practice mock --env custom --fhir-base <URL> --client-id mock-client
-//! athena auth login --org mock --label test
+//! athena profiles add test
+//! athena --profile test auth login --org mock --label test
 //! curl -X POST 'http://127.0.0.1:<PORT>/__mock/mode?set=revoked'   # error paths
 //! ```
 
