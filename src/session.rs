@@ -206,6 +206,34 @@ impl SessionIndex {
         self.sessions.push(entry);
     }
 
+    /// Give the sign-in labelled `from` at `org` the label `to`, refusing a
+    /// label another sign-in there already has.
+    pub fn relabel(&mut self, org: &str, from: &str, to: &str) -> Result<SessionEntry, CliError> {
+        if from != to
+            && self
+                .sessions
+                .iter()
+                .any(|s| s.org == org && s.label.as_deref() == Some(to))
+        {
+            return Err(CliError::Usage(format!(
+                "the label `{to}` already names another sign-in at `{org}`"
+            ))
+            .with_remedy("relabel or sign out that one first (`athena patients list`)"));
+        }
+        let Some(entry) = self
+            .sessions
+            .iter_mut()
+            .find(|s| s.org == org && s.label.as_deref() == Some(from))
+        else {
+            return Err(CliError::NotFound(format!(
+                "no sign-in at `{org}` has the label `{from}`"
+            ))
+            .with_remedy("list them with `athena patients list`"));
+        };
+        entry.label = Some(to.to_string());
+        Ok(entry.clone())
+    }
+
     pub fn remove(&mut self, org: &str, patient: &str) -> bool {
         let before = self.sessions.len();
         self.sessions
@@ -377,6 +405,23 @@ mod tests {
         assert_eq!(index.sessions[0].label.as_deref(), Some("new"));
         assert!(index.remove("clinic", "a-1.E-1"));
         assert!(!index.remove("clinic", "a-1.E-1"));
+    }
+
+    #[test]
+    fn relabel_renames_one_sign_in_and_keeps_labels_distinct() {
+        let mut index = SessionIndex::default();
+        index.upsert(entry("clinic", "a-1.E-1", Some("unconfirmed")));
+        index.upsert(entry("clinic", "a-1.E-2", Some("kid")));
+        index.upsert(entry("other", "a-1.E-3", Some("adult1")));
+        let renamed = index.relabel("clinic", "unconfirmed", "adult1").unwrap();
+        assert_eq!(renamed.patient, "a-1.E-1");
+        assert_eq!(index.matching(Some("adult1"), Some("clinic")).len(), 1);
+        assert!(index.matching(Some("unconfirmed"), None).is_empty());
+        let taken = index.relabel("clinic", "adult1", "kid").unwrap_err();
+        assert_eq!(taken.exit_code(), 2);
+        assert!(index.relabel("clinic", "kid", "kid").is_ok());
+        let missing = index.relabel("clinic", "nobody", "x").unwrap_err();
+        assert_eq!(missing.exit_code(), 4);
     }
 
     #[test]

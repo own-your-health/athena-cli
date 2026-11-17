@@ -429,6 +429,48 @@ fn self_update_check_is_documented_but_not_run() {
 }
 
 #[test]
+fn relabel_changes_only_the_index() {
+    let home = tmp();
+    let state = home.join("athena");
+    std::fs::create_dir_all(&state).unwrap();
+    let index = state.join("sessions.json");
+    std::fs::write(
+        &index,
+        serde_json::json!({"sessions": [{
+            "org": "clinic",
+            "patient": "a-900001.E-1001",
+            "label": "unconfirmed",
+            "environment": "production",
+            "fhir_base": "https://api.platform.athenahealth.com/fhir/r4",
+            "stored_at": "2026-01-01T00:00:00Z"
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    let relabel = |from: &str, to: &str| {
+        run(
+            &home,
+            &[
+                "--json", "auth", "relabel", "--org", "clinic", "--from", from, "--to", to,
+            ],
+        )
+    };
+    let (code, json, _) = relabel("unconfirmed", "adult1");
+    assert_eq!(code, 0, "{json}");
+    assert_eq!(json["schema"], "auth-relabel/v1");
+    assert_eq!(json["patient"], "a-900001.E-1001");
+    assert_eq!(json["to"], "adult1");
+    let saved: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&index).unwrap()).unwrap();
+    assert_eq!(saved["sessions"][0]["label"], "adult1");
+    let (code, json, _) = relabel("unconfirmed", "adult2");
+    assert_eq!(code, 4, "{json}");
+    let (code, json, _) = relabel("adult1", "two words");
+    assert_eq!(code, 2, "{json}");
+    assert!(json["error"]["message"].as_str().unwrap().contains("--to"));
+}
+
+#[test]
 fn plain_file_export_refuses_a_real_practice_before_the_keychain() {
     let home = tmp();
     let state = home.join("athena");
