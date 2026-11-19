@@ -705,6 +705,25 @@ fn a_token_goes_nowhere_but_its_own_server() {
 }
 
 #[test]
+fn a_relative_search_with_a_url_in_its_query_is_sent_to_the_practice() {
+    // A token search names its code system by URL (`code=<system>|<code>`).
+    // The path is still relative: it goes to the practice's own server.
+    let m = Mock::start(0);
+    let http = BlockingTransport::new().unwrap();
+    let tokens = sign_in(&m, &http);
+    let store = Arc::new(MemoryStore::default());
+    let c = client(&http, &store, &tokens);
+    let before = m.requests().len();
+    let search = format!(
+        "Observation?patient={}&code=http://loinc.org|8302-2",
+        mock::PATIENT
+    );
+    let answer = c.get_raw(&search);
+    assert!(answer.is_ok(), "{:?}", answer.err().map(|e| e.to_string()));
+    assert_eq!(m.requests().len(), before + 1, "one search was sent");
+}
+
+#[test]
 fn the_stream_reads_back_with_the_consumers_reader() {
     use pk_med_records::stream::{Item, RecordsReader};
     let m = Mock::start(0);
