@@ -428,6 +428,15 @@ is not followed. A reference whose id the rule refuses comes back apart
 (`Err(RefusedReference)`), so it becomes the skip rather than vanishing, when
 `is_under` puts it on the practice's base.
 
+`api GET <path>` goes through the same rule. A path that starts with a URL
+scheme (`https://`) is absolute and is read only when it is on the
+practice's FHIR base. Anything else is relative to that base, a search
+included, even when its query names a URL: a token search's code system
+(`Observation?patient=<id>&code=http://loinc.org|<code>`). Up to v0.4.1
+(medical-common v0.6.2) a `://` anywhere in the path counted as absolute,
+so such a search was refused with exit 5 ("a reference points at another
+server").
+
 Remedies. pk_med_smart's errors carry generic remedies (`pk_med_smart::remedy`,
 "sign in again"). athena replaces them with its own commands: a refused code
 exchange or ID token names `athena --profile <profile> auth login --org

@@ -27,7 +27,7 @@ from [cli-common](https://github.com/piekstra/cli-common).
 | `tests/support/mock.rs` | a mock athenahealth practice on 127.0.0.1 (also `make mock`) |
 | `docs/api.md` | athenahealth's behaviour and traps, quoted; read before changing sign-in or export |
 
-medical-common is pinned at v0.6.2, on the same cli-common tag (v0.33.2).
+medical-common is pinned at v0.6.4, on the same cli-common tag (v0.33.2).
 From `pk-med-smart`: discovery, the scope set, the launch (`begin`, with the
 OpenID nonce) and the code exchange, `SmartSession`, `ProfileSessions` (a
 profile's sessions in the vault) and `migrate_sessions`, `SignInWindow`
