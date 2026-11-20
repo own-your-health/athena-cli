@@ -87,7 +87,7 @@ pub enum Command {
     /// Print a shell completion script.
     Completions { shell: Shell },
     /// What to enter in athenahealth's Developer Portal to register an app
-    /// for athena (registration/v1).
+    /// for athena (registration/v2).
     Registration(RegistrationArgs),
     /// Machine-readable capability discovery (cli-info/v1).
     Info,
@@ -607,9 +607,9 @@ fn info(ctx: &Ctx) -> Result<(), CliError> {
         ],
     )
     .with_profiles(&["health-records/v1", pk_cli_documents::PROFILE]);
-    // A configuration that does not parse leaves `client` out, with a
-    // warning, rather than failing discovery or guessing. `with_client`
-    // fails only when cli-common's DTO grows a `client` of its own
+    // A configuration that does not parse leaves `clients` out, with a
+    // warning, rather than failing discovery or guessing. `with_clients`
+    // fails only when cli-common's DTO grows a `clients` of its own
     // (medical-common DESIGN §3.8), which a test then catches.
     let value = match ctx.load() {
         Ok(config) => registration::with_clients(&info, &config)?,
@@ -922,8 +922,12 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
         status.render();
         println!("Profile:       {profile}");
         for line in registration::status_lines(&config) {
-            // medical-common's line starts "client (production): ".
-            println!("C{}", line.strip_prefix('c').unwrap_or(&line));
+            // medical-common's line starts "client (production): "; a
+            // wording it changes is printed as it comes.
+            match line.strip_prefix("client ") {
+                Some(rest) => println!("Client {rest}"),
+                None => println!("{line}"),
+            }
         }
         if sessions.is_empty() {
             println!(

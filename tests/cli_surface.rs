@@ -387,7 +387,7 @@ fn registration_prints_the_portal_form() {
     );
 
     // A configuration that does not parse still gets the form, with the
-    // default ports and a warning; `info` leaves `client` out and warns.
+    // default ports and a warning; `info` leaves `clients` out and warns.
     std::fs::write(home.join("athena/config.json"), "{ not json").unwrap();
     let (code, v, err) = run(&home, &["--json", "registration"]);
     assert_eq!(code, 0, "{err}");

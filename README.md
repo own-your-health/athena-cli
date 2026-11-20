@@ -116,14 +116,14 @@ keeps it. `athena --profile <NAME> auth status` shows each sign-in's end
 | `profiles list\|add\|remove` | Login profiles, one per person who signs in (`profile-list/v1`). `remove` signs out the profile's sign-ins, revoking them, and removes its browser profile; it asks first, or takes `--force` |
 | `profiles migrate <NAME> --org <ORG> --patient <ID\|LABEL>...` | Move sign-ins stored before v0.4.0 into a profile (`profile-migrate/v1`); `profiles list` shows them |
 | `auth login --org <ORG> [--label <WHO>]` | Standalone patient launch in the profile's own Chrome window (PKCE, loopback); one sign-in per patient record. It refuses a grant with no read scope and names the types a partial grant leaves out (`types_not_granted`). A second sign-in for the same patient replaces the first and revokes the tokens the first held alone (nothing, when both are one renewed grant) |
-| `auth status` / `auth logout` | Each sign-in's state (`auth-status/v1`), with whether each environment's client id is configured (`clients`, the id by its last four characters); remove one or all |
+| `auth status` / `auth logout` | Each sign-in's state (`auth-status/v1`), with whether each environment's client id is configured (`clients`, the id by its last four characters). Each sign-in shows its own client id the same way (`client_id_ends_with`), left out for an id under 12 characters; remove one or all |
 | `auth relabel --org <ORG> --from <LABEL> --to <LABEL>` | Rename a sign-in's label (`auth-relabel/v1`), in the local index only: no keychain, no network |
 | `patients list [--org <ORG>]` | The patients signed in, each with `self` or `proxy` (`patient-list/v1`) |
 | `records export --patient <ID> [--since D] --ndjson` | Every resource the practice serves to the patient, files included, as `records-stream/v1` |
 | `documents list\|download` | Visit notes, reports and results' forms (`documents/v1`) |
 | `api GET <path>` | One FHIR read as the signed-in patient |
 | `config path\|show\|set\|unset` | Client ids, redirect ports, the scope version (`v2`, or `v1` for an app registered with SMART V1 scopes only), practice profiles |
-| `info`, `completions`, `self-update` | Family standard. `info` adds `clients`: whether each environment's client id is configured, the id by its last four characters (`client_id_ends_with`) |
+| `info`, `completions`, `self-update` | Family standard. `info` adds `clients`: whether each environment's client id is configured, the id by its last four characters (`client_id_ends_with`, left out for an id under 12 characters) |
 
 Every command takes `--json`. Every command that uses a sign-in (`auth`,
 `patients`, `records`, `documents`, `api`) takes `--profile <NAME>`, or
@@ -132,6 +132,11 @@ exit 2. Exit codes: 0 ok, 2 usage, 3 sign-in needed or refused, 4 not
 found, 5 the practice or network failed, 6 confirmation needed. With
 `--json` an error prints `{"error": {"code", "message"}}`, and `reason`
 and `remedy` when it has them (`no_client` for a missing client id).
+
+`clients` is medical-common's member of cli-common's `cli-info/v1` and
+`auth-status/v1`, added to them, so those schema ids stay. v0.5.0 carried
+a single `client` object for production instead; from v0.6.0 read
+`.clients[] | select(.registration == "production")`.
 
 `records export -o <DIR>` writes `<DIR>/records.ndjson` instead and prints
 `records-export/v1`, for athenahealth's sandbox and local test servers only.
