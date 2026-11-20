@@ -40,22 +40,25 @@ such as those commonly referred to as "web scraping," "data scraping," or
 
 ### The terms a registration agrees to
 
-[Developer Portal Terms and Conditions][terms], the points that bind a
-household tool:
+[Developer Portal Terms and Conditions][terms], the points that bind
+whoever registers an app:
 
 | Section | athenahealth's wording, shortened |
 |---|---|
 | License | "a limited, non-exclusive, revocable, non-transferable, and non-sublicensable right to access and use the Developer Portal, API and ... Materials" |
-| Restrictions | no "reverse engineer, reverse compile, disassemble the API or Materials"; no scraping (above); no redistributing "access to the API"; no use "for purposes of monitoring the availability, performance, or functionality of our services or for any other benchmarking purposes" |
-| Keys | "You will be issued one or more unique passwords, security codes, or tokens (each a "Key")"; Keys are not shared, and "You may not transfer, assign, or delegate these terms or your Keys to any third party" |
+| Restrictions | no "reverse engineer, reverse compile, disassemble the API or Materials"; no scraping (above); no redistributing "access to the API"; no use "for purposes of monitoring the availability, performance, or functionality of our services or for any other benchmarking purposes"; and no "cause, assist, or permit any third party (including an end-user) to do any of the foregoing" |
+| Keys | "You will be issued one or more unique passwords, security codes, or tokens (each a “Key”)". "Access to the Key shall be limited to you and your employees, if any, that require access to the API for the purposes of conducting the testing of the API". "You may not sell, transfer, sublicense, or otherwise disclose your account or Keys to any other party." "You are responsible for all activities that occur using your account and Keys, regardless of whether such activities are undertaken by you or a third party." The terms do not say whether a client id is a Key |
+| Registration | "providing current, complete, and accurate information when prompted", updated "promptly" when it changes. athenahealth may "deny, revoke, suspend, remove, terminate, or otherwise prohibit your registration and the issuance of any associated credentials" for information it finds "incomplete, inaccurate, false, misleading" or "insufficient", except "to the extent prohibited by Applicable Law ..., including, without limitation, the 21st Century Cures Act" |
 | Fees | only "In the event that you have an agreement with Athena"; Certified APIs are free (above) |
 | Termination | "Athena may change, suspend, or discontinue the API and suspend or terminate your use ... at any time for any reason, with or without notice" |
 | Indemnity | the developer indemnifies athenahealth for use "in violation of these Terms" |
 | Liability | "Under no circumstances shall Athena be liable to you for any direct damages in excess of $100" |
 | Law | "the laws of the Commonwealth of Massachusetts" |
 
-So athena keeps the client id in local configuration, never in the
-repository: each household registers its own app (`docs/registration.md`).
+So athena ships no client id. It treats the client id as a Key: each user
+registers their own app (`docs/registration.md`, `athena registration`),
+the id lives in local configuration, never in the repository, and `info`
+and `auth status` show a configured id by its last four characters only.
 
 ## Environments
 

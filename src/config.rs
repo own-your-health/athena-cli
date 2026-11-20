@@ -30,9 +30,10 @@ pub struct Config {
     /// The SMART scope spelling a sign-in asks in; v2 when unset.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope_version: Option<ScopeSpelling>,
-    /// The app's client id in each environment. Not a secret, but athenahealth's
-    /// terms call it a key that is not to be shared, so it is configuration, never
-    /// code.
+    /// The app's client id in each environment. Not a secret (athena is a
+    /// public client), but athenahealth's terms keep the "Keys" it issues to
+    /// the registrant, and athena treats the client id as one: it is
+    /// configuration, never code.
     #[serde(default, skip_serializing_if = "ClientIds::is_empty")]
     pub client_ids: ClientIds,
     /// Practice profiles by slug.
@@ -232,15 +233,10 @@ impl Config {
             return Ok(id.clone());
         }
         let env = practice.environment;
-        self.client_ids.get(env).map(str::to_string).ok_or_else(|| {
-            CliError::Usage(format!(
-                "no client id is configured for the {env} environment"
-            ))
-            .with_remedy(format!(
-                "register athena with athenahealth (docs/registration.md), then run `athena \
-                     config set client-id <ID> --env {env}`"
-            ))
-        })
+        self.client_ids
+            .get(env)
+            .map(str::to_string)
+            .ok_or_else(|| crate::registration::missing_client(self, env))
     }
 
     pub fn scope_version(&self) -> ScopeSpelling {
