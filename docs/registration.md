@@ -12,7 +12,7 @@ It takes about 15 minutes, needs no contract, and has no review
 
 `athena registration` prints every value below, with your configuration's
 redirect ports (`--env preview` for the sandbox app, `--json` for
-`registration/v1`).
+`registration/v2`).
 
 | Setting | Value |
 |---|---|
@@ -102,7 +102,7 @@ registrant ([The terms you agree to](#the-terms-you-agree-to)).
 ```sh
 athena config set client-id <PREVIEW_CLIENT_ID> --env preview
 athena config set client-id <PRODUCTION_CLIENT_ID> --env production
-athena info | jq .client        # the Production client: configured, client_id_ends_with
+athena info | jq .clients       # each environment: configured, client_id_ends_with
 athena orgs list                 # CLIENT_ID_CONFIGURED is true for the sandbox and your practices
 ```
 

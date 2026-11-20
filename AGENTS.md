@@ -11,7 +11,7 @@ from [cli-common](https://github.com/piekstra/cli-common).
 | File | Owns |
 |---|---|
 | `src/cli.rs` | the clap tree, the `Ctx`, every command's handler, exit codes, `info` |
-| `src/registration.rs` | `athena registration`: medical-common's `pk_med_smart::Registration` (`registration/v1`) with the Developer Portal's choices and form values, which follow `docs/registration.md` (change the two together); `missing_client`; and the `client` member of `info` and `auth status` (the Production client, with `client_id_ends_with` in place of the whole id) |
+| `src/registration.rs` | `athena registration`: medical-common's `pk_med_smart::Registration` (`registration/v2`), one per environment, with the Developer Portal's choices, form values and scope selection, which follow `docs/registration.md` (change the two together); `missing_client`; and the `clients` member of `info` and `auth status` (one entry per environment, the id by its last four characters) |
 | `src/config.rs` | `config.json`: client ids per environment, redirect ports, practice profiles and their FHIR base |
 | `src/env.rs` | athenahealth's Preview and Production hosts, and custom servers |
 | `src/directory.rs` | athenahealth's FHIR base URL Bundle: download, the cut-down local copy, search |
