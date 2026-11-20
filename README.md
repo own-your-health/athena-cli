@@ -129,7 +129,9 @@ Every command takes `--json`. Every command that uses a sign-in (`auth`,
 `patients`, `records`, `documents`, `api`) takes `--profile <NAME>`, or
 `ATHENA_PROFILE`; there is no default, and a missing or unknown profile is
 exit 2. Exit codes: 0 ok, 2 usage, 3 sign-in needed or refused, 4 not
-found, 5 the practice or network failed, 6 confirmation needed.
+found, 5 the practice or network failed, 6 confirmation needed. With
+`--json` an error prints `{"error": {"code", "message"}}`, and `reason`
+and `remedy` when it has them (`no_client` for a missing client id).
 
 `records export -o <DIR>` writes `<DIR>/records.ndjson` instead and prints
 `records-export/v1`, for athenahealth's sandbox and local test servers only.
