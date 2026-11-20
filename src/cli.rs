@@ -87,7 +87,7 @@ pub enum Command {
     /// Print a shell completion script.
     Completions { shell: Shell },
     /// What to enter in athenahealth's Developer Portal to register an app
-    /// for athena (registration/v1).
+    /// for athena (registration/v2).
     Registration(RegistrationArgs),
     /// Machine-readable capability discovery (cli-info/v1).
     Info,
@@ -607,15 +607,15 @@ fn info(ctx: &Ctx) -> Result<(), CliError> {
         ],
     )
     .with_profiles(&["health-records/v1", pk_cli_documents::PROFILE]);
-    // A configuration that does not parse leaves `client` out, with a
-    // warning, rather than failing discovery or guessing. `with_client`
-    // fails only when cli-common's DTO grows a `client` of its own
+    // A configuration that does not parse leaves `clients` out, with a
+    // warning, rather than failing discovery or guessing. `with_clients`
+    // fails only when cli-common's DTO grows a `clients` of its own
     // (medical-common DESIGN §3.8), which a test then catches.
     let value = match ctx.load() {
-        Ok(config) => registration::with_client(&info, &config)?,
+        Ok(config) => registration::with_clients(&info, &config)?,
         Err(e) => {
             eprintln!(
-                "warning: the configuration could not be read ({}); `client` is left out",
+                "warning: the configuration could not be read ({}); `clients` is left out",
                 e.message()
             );
             serde_json::to_value(&info).unwrap_or(Value::Null)
@@ -909,7 +909,7 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
         ctx.note(unassigned_note(unassigned));
     }
     if ctx.json {
-        let mut value = registration::with_client(&status.to_json(), &config)?;
+        let mut value = registration::with_clients(&status.to_json(), &config)?;
         if let Value::Object(map) = &mut value {
             map.insert("profile".into(), json!(profile.as_str()));
             map.insert("sessions".into(), Value::Array(sessions));
@@ -921,7 +921,14 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
     } else {
         status.render();
         println!("Profile:       {profile}");
-        println!("Client:        {}", registration::status_line(&config));
+        for line in registration::status_lines(&config) {
+            // medical-common's line starts "client (production): "; a
+            // wording it changes is printed as it comes.
+            match line.strip_prefix("client ") {
+                Some(rest) => println!("Client {rest}"),
+                None => println!("{line}"),
+            }
+        }
         if sessions.is_empty() {
             println!(
                 "Patients:      none signed in (athena --profile {profile} auth login --org <ORG>)"
@@ -950,10 +957,9 @@ fn stored_columns(row: &mut Map<String, Value>, stored: &SmartSession, now: u64)
     let usable = session::usable(stored, now);
     row.insert("credential_in_keychain".into(), json!(true));
     row.insert("usable".into(), json!(usable));
-    row.insert(
-        "client_id_ends_with".into(),
-        json!(registration::ends_with(&stored.client_id)),
-    );
+    if let Some(tail) = registration::ends_with(&stored.client_id) {
+        row.insert("client_id_ends_with".into(), json!(tail));
+    }
     row.insert(
         "refresh_token".into(),
         json!(stored.tokens.refresh_token.is_some()),
