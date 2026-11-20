@@ -1,20 +1,25 @@
 //! What to enter in athenahealth's Developer Portal to register an app for
-//! athena (`athena registration`, `registration/v1`), and whether a client id
-//! is configured (`info`, `auth status`). The values follow
-//! `docs/registration.md`; the two change together.
+//! athena (`athena registration`, medical-common's `registration/v1`), and
+//! whether a client id is configured (the `client` member of `info` and
+//! `auth status`). The values follow `docs/registration.md`; the two change
+//! together.
 
+use pk_cli_core::CliError;
+use pk_med_smart::{ClientStatus, ClientType, Registration, ScopeVersion, StoredIn};
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use crate::config::Config;
 use crate::env::Environment;
-use crate::smart;
+use crate::{smart, BIN};
 
-pub const SCHEMA: &str = "registration/v1";
 /// athenahealth's Developer Portal, where an app is registered.
 pub const PORTAL_URL: &str = "https://developer.api.athena.io/ams-portal/";
-/// The step-by-step guide, as a URL: a binary installed from a release has
-/// no checkout to find `docs/registration.md` in.
+/// The step-by-step guide, as `registration/v1` names it: its path in the
+/// repository.
+pub const DOC: &str = "docs/registration.md";
+/// The same guide as a URL, for a binary installed from a release, which has
+/// no checkout to find the path in.
 pub const DOC_URL: &str = "https://github.com/piekstra/athena-cli/blob/main/docs/registration.md";
 
 /// The environments athenahealth registers apps in. A FHIR server of its own
@@ -35,277 +40,159 @@ impl From<RegisterEnv> for Environment {
     }
 }
 
-/// The command that prints the form's values for `env`.
-pub fn command(env: Environment) -> String {
-    format!("athena registration --env {env}")
-}
-
 /// The command that stores the client id the portal issued.
 pub fn store_command(env: Environment) -> String {
-    format!("athena config set client-id <CLIENT_ID> --env {env}")
+    format!("{BIN} config set client-id <CLIENT_ID> --env {env}")
 }
-
-#[derive(Debug, Serialize)]
-pub struct Field {
-    pub field: &'static str,
-    pub value: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub note: Option<&'static str>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Scopes {
-    /// The product to open on the app's Scopes tab.
-    pub product: &'static str,
-    /// The boxes to tick for each type.
-    pub permissions: [&'static str; 2],
-    pub types: Vec<&'static str>,
-    /// The scope string `auth login` asks for, to compare with the grant.
-    pub requested: String,
-}
-
-/// `registration/v1`: the portal's choices and form, in the order it asks.
-#[derive(Debug, Serialize)]
-pub struct Form {
-    pub schema: &'static str,
-    pub vendor: &'static str,
-    pub environment: Environment,
-    pub portal: &'static str,
-    pub doc: &'static str,
-    /// The choices after "(+) Create a New App", in order.
-    pub app_type: [&'static str; 3],
-    pub fields: Vec<Field>,
-    pub launch: &'static str,
-    pub client_type: &'static str,
-    pub client_secret: bool,
-    pub pkce: &'static str,
-    pub redirect_uris: Vec<String>,
-    pub scopes: Scopes,
-    pub store: String,
-    /// Whether a client id is configured for this environment already.
-    pub configured: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub client_id_ends_with: Option<String>,
-    /// How long a new client id can take to work.
-    pub propagation: &'static str,
-}
-
-const PROPAGATION: &str = "A new client id can take up to about 18 hours to reach athenahealth's \
-     API gateway. Until then sign-in and consent work, and the token request answers 401 \
-     InvalidClient (athena exits 5 and stores nothing): sign in again later.";
 
 /// The registration for `env`, with this configuration's redirect ports.
-pub fn form(config: &Config, env: RegisterEnv) -> Form {
-    let env = Environment::from(env);
-    let redirect_uris: Vec<String> = config
-        .redirect_ports()
-        .iter()
-        .map(|port| format!("http://127.0.0.1:{port}/callback"))
-        .collect();
-    let configured = config.client_ids.get(env);
-    let fields = vec![
-        Field {
-            field: "Environment",
-            value: match env {
-                Environment::Preview => "Preview".into(),
-                _ => "Production".into(),
-            },
-            note: Some(match env {
-                Environment::Preview => "athenahealth's sandbox and its synthetic patient",
-                _ => "real practices; register Preview first to try the sandbox",
-            }),
-        },
-        Field {
-            field: "App name",
-            value: "<your brand> Health Records".into(),
-            note: Some(
-                "your own brand plus what the app does. athenahealth refuses \"athena\", \
-                 \"athenahealth\", \"app\", \"application\", \"PHR\", \"CAPI\", \"test\", \
-                 environment words, people's names, and a name another app has: add a word",
-            ),
-        },
-        Field {
-            field: "Website",
-            value: "https://github.com/piekstra/athena-cli".into(),
-            note: Some("or the address of your own copy"),
-        },
-        Field {
-            field: "Description",
-            value: "Command-line tool with which a patient or caregiver downloads their own \
-                    records from athenahealth practices to their own computer."
-                .into(),
-            note: None,
-        },
-        Field {
-            field: "Intended end users",
-            value: "The patient and approved family members or caregivers".into(),
-            note: Some("a caregiver signs in for a child"),
-        },
-        Field {
-            field: "OAuth client type",
-            value: "Public (native)".into(),
-            note: None,
-        },
-        Field {
-            field: "Token authentication",
-            value: "PKCE, no client secret".into(),
-            note: None,
-        },
-        Field {
-            field: "Redirect URLs",
-            value: redirect_uris.join(" "),
-            note: Some("each one exactly, port included"),
-        },
-    ];
-    Form {
-        schema: SCHEMA,
-        vendor: "athenahealth",
-        environment: env,
-        portal: PORTAL_URL,
-        doc: DOC_URL,
-        app_type: [
-            "My app will use Certified APIs ONLY",
-            "3-Legged OAuth for Patients",
-            "I confirm that I am building a PHR app",
-        ],
-        fields,
-        launch: "standalone-patient",
-        client_type: "public",
-        client_secret: false,
-        pkce: "S256",
-        redirect_uris,
-        scopes: Scopes {
-            product: "FHIR R4 SMART V2",
-            permissions: ["read (.r)", "search (.s)"],
-            types: smart::PATIENT_TYPES.to_vec(),
-            requested: smart::scopes(pk_med_smart::ScopeVersion::V2).to_string(),
-        },
-        store: store_command(env),
-        configured: configured.is_some(),
-        client_id_ends_with: configured.map(ends_with),
-        propagation: PROPAGATION,
+/// athenahealth registers Preview and Production apps; `custom` gets
+/// Production's form.
+pub fn form(config: &Config, env: Environment) -> Registration {
+    let preview = env == Environment::Preview;
+    let env = if preview {
+        Environment::Preview
+    } else {
+        Environment::Production
+    };
+    let mut reg = Registration::new(
+        BIN,
+        "athenahealth",
+        PORTAL_URL,
+        DOC,
+        ClientType::Public,
+        store_command(env),
+    );
+    for port in config.redirect_ports() {
+        reg = reg.redirect_uri(format!("http://127.0.0.1:{port}/callback"));
     }
+    reg.scopes(&smart::scopes(ScopeVersion::V2))
+        .field_with_note(
+            "Create a New App",
+            "My app will use Certified APIs ONLY",
+            "then the category and the box below, and Continue to App Details",
+        )
+        .field("App category", "3-Legged OAuth for Patients")
+        .field("PHR app", "tick \"I confirm that I am building a PHR app\"")
+        .field_with_note(
+            "Environment",
+            if preview { "Preview" } else { "Production" },
+            if preview {
+                "athenahealth's sandbox and its synthetic patient only"
+            } else {
+                "real practices; `athena registration --env preview` gives the sandbox's app"
+            },
+        )
+        .field_with_note(
+            "App name",
+            "<your brand> Health Records",
+            "your own brand plus what the app does",
+        )
+        .url("Website", "https://github.com/piekstra/athena-cli")
+        .field(
+            "Description",
+            "Command-line tool with which a patient or caregiver downloads their own records \
+             from athenahealth practices to their own computer.",
+        )
+        .field_with_note(
+            "Intended end users",
+            "The patient and approved family members or caregivers",
+            "a caregiver signs in for a child",
+        )
+        .field("OAuth client type", "Public (native)")
+        .field("Token authentication", "PKCE, no client secret")
+        .field_with_note(
+            "Redirect URLs",
+            "each of the Redirect URIs above",
+            "exactly, port included",
+        )
+        .note(
+            "On the app's Scopes tab, open FHIR R4 SMART V2, tick read (.r) and search \
+             (.s) for each patient/<Type>.rs scope above, and choose Confirm Scopes. \
+             athenahealth grants openid, fhirUser, launch/patient and offline_access to every \
+             patient app, with no box to tick.",
+        )
+        .note(
+            "The portal refuses an app name with \"athena\", \"athenahealth\", \"app\", \
+             \"application\", \"PHR\", \"CAPI\", \"test\", environment words or people's names, \
+             and a name another app has: add a word.",
+        )
+        .note(
+            "There is no review: the client id is issued when the app is created, and a \
+             Production app reads at any athenaOne practice once a patient consents.",
+        )
+        .note(
+            "A new client id can take up to about 18 hours to reach athenahealth's API \
+             gateway. Until then sign-in and consent work, then the token request answers 401 \
+             InvalidClient: athena exits 5, stores nothing, and works on a later sign-in.",
+        )
+        .note(format!("The guide: {DOC_URL}"))
 }
 
-impl Form {
-    pub fn render(&self) {
-        let env = &self.fields[0].value;
-        println!("Registering an app for athena with athenahealth ({env})");
-        println!();
-        println!("Portal:  {}", self.portal);
-        println!("Guide:   {}", self.doc);
-        println!();
-        println!("1. Choose (+) Create a New App, then:");
-        for choice in self.app_type {
-            println!("     {choice}");
-        }
-        println!("   and choose Continue to App Details.");
-        println!("2. Fill in the form:");
-        for field in &self.fields {
-            let mut values = if field.field == "Redirect URLs" {
-                self.redirect_uris.clone()
-            } else {
-                vec![field.value.clone()]
-            };
-            if let Some(note) = field.note {
-                values.push(format!("({note})"));
-            }
-            let lines = values.iter().flat_map(|value| wrap(value, 50));
-            for (i, line) in lines.enumerate() {
-                let label = if i == 0 { field.field } else { "" };
-                println!("     {label:<22}{line}");
-            }
-        }
-        println!("3. Read the linked terms, tick the box, choose Create Application, and copy");
-        println!("   the client id.");
-        println!(
-            "4. On the app's Scopes tab, open {}. For each type below,",
-            self.scopes.product
-        );
-        println!(
-            "   tick {} and {}, then choose Confirm Scopes:",
-            self.scopes.permissions[0], self.scopes.permissions[1]
-        );
-        for line in wrap(&self.scopes.types.join(", "), 72) {
-            println!("     {line}");
-        }
-        println!("5. Store the client id:");
-        println!("     {}", self.store);
-        match &self.client_id_ends_with {
-            Some(tail) => println!("   Configured now: yes, ending {tail}."),
-            None => println!("   Configured now: no."),
-        }
-        println!();
-        for line in wrap(self.propagation, 78) {
-            println!("{line}");
-        }
+/// A command that needs a client id for `env` and finds none (exit 2,
+/// `pk_med_smart::registration::NO_CLIENT`).
+pub fn missing_client(config: &Config, env: Environment) -> CliError {
+    let reg = form(config, env);
+    let error = pk_med_smart::missing_client(&reg, Some(env.as_str()));
+    match env {
+        Environment::Production => error,
+        // `athena registration` alone prints Production's form.
+        Environment::Preview => error.with_remedy(format!(
+            "register one as {DOC} describes, entering what `{BIN} registration --env preview` \
+             prints, then run `{}`",
+            reg.store
+        )),
+        Environment::Custom => error.with_remedy(format!(
+            "register an app with whoever runs this FHIR server ({DOC_URL}), then run `{BIN} \
+             config set client-id <CLIENT_ID> --env custom`"
+        )),
     }
 }
 
 /// The last four characters of a client id: enough to tell two apart, while
 /// `info` and `auth status` output, which gets pasted into bug reports,
-/// carries no whole id. `config show` prints it whole.
+/// carries no whole id. athenahealth's terms keep the Keys it issues to the
+/// registrant (`docs/api.md`). `config show` prints the id whole.
 pub fn ends_with(id: &str) -> String {
     let chars: Vec<char> = id.chars().collect();
     chars[chars.len().saturating_sub(4)..].iter().collect()
 }
 
-/// Which client ids are configured: each environment's, and each practice
-/// profile that has its own. For `info` and `auth status`.
-pub fn clients(config: &Config) -> Value {
-    let env = |env: Environment| match config.client_ids.get(env) {
-        Some(id) => json!({"configured": true, "client_id_ends_with": ends_with(id)}),
-        None => json!({"configured": false, "register": command(env)}),
-    };
-    let practices: Vec<Value> = config
-        .practices
-        .iter()
-        .filter_map(|(slug, practice)| {
-            practice
-                .client_id
-                .as_deref()
-                .map(|id| json!({"org": slug, "client_id_ends_with": ends_with(id)}))
-        })
-        .collect();
-    let mut value = json!({
-        "preview": env(Environment::Preview),
-        "production": env(Environment::Production),
-        "doc": DOC_URL,
-    });
-    if !practices.is_empty() {
-        value["practices"] = Value::Array(practices);
+/// The Production registration's client, the one a patient's own records
+/// need, and its id's last four characters. `orgs list` shows each practice
+/// profile's, the sandbox's included.
+pub fn status(config: &Config) -> (ClientStatus, Option<String>) {
+    let production = Environment::Production.as_str();
+    match config.client_ids.get(Environment::Production) {
+        Some(id) => (
+            ClientStatus::configured(ClientType::Public, StoredIn::Config).registration(production),
+            Some(ends_with(id)),
+        ),
+        None => (ClientStatus::none().registration(production), None),
     }
-    value
 }
 
-/// One line for `auth status`: which environments have a client id.
-pub fn clients_line(config: &Config) -> String {
-    [Environment::Production, Environment::Preview]
-        .iter()
-        .map(|&env| match config.client_ids.get(env) {
-            Some(id) => format!("{env} configured (ends {})", ends_with(id)),
-            None => format!("{env} not configured ({})", command(env)),
-        })
-        .collect::<Vec<_>>()
-        .join("; ")
+/// `dto` as JSON with medical-common's `client` member, carrying athena's
+/// `client_id_ends_with` in place of the whole id.
+pub fn with_client<T: Serialize>(dto: &T, config: &Config) -> Result<Value, CliError> {
+    let (status, tail) = status(config);
+    let mut value = pk_med_smart::with_client(dto, &status)?;
+    if let Some(tail) = tail {
+        value["client"]["client_id_ends_with"] = json!(tail);
+    }
+    Ok(value)
 }
 
-fn wrap(text: &str, width: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut line = String::new();
-    for word in text.split(' ') {
-        if !line.is_empty() && line.len() + 1 + word.len() > width {
-            lines.push(std::mem::take(&mut line));
-        }
-        if !line.is_empty() {
-            line.push(' ');
-        }
-        line.push_str(word);
+/// The human line for `auth status`: medical-common's line without its
+/// `client: ` label, and the id's last four characters.
+pub fn status_line(config: &Config) -> String {
+    let (status, tail) = status(config);
+    let text = status.text(&form(config, Environment::Production));
+    let text = text.strip_prefix("client: ").unwrap_or(&text);
+    match tail {
+        Some(tail) => format!("{text}, id ending {tail}"),
+        None => text.to_string(),
     }
-    if !line.is_empty() {
-        lines.push(line);
-    }
-    lines
 }
 
 #[cfg(test)]
@@ -318,32 +205,34 @@ mod tests {
             redirect_ports: Some(vec![50123, 50124]),
             ..Config::default()
         };
-        let form = form(&config, RegisterEnv::Production);
+        let reg = form(&config, Environment::Production);
         assert_eq!(
-            form.redirect_uris,
+            reg.redirect_uris,
             [
                 "http://127.0.0.1:50123/callback",
                 "http://127.0.0.1:50124/callback"
             ]
         );
         assert_eq!(
-            form.store,
+            reg.store,
             "athena config set client-id <CLIENT_ID> --env production"
         );
-        assert!(!form.configured);
+        assert_eq!(reg.doc, "docs/registration.md");
     }
 
     #[test]
     fn the_form_asks_for_every_type_a_sign_in_requests() {
-        let form = form(&Config::default(), RegisterEnv::Preview);
+        let reg = form(&Config::default(), Environment::Preview);
         for ty in smart::PATIENT_TYPES {
-            assert!(
-                form.scopes.requested.contains(&format!("patient/{ty}.rs")),
-                "{ty}"
-            );
+            assert!(reg.scopes.contains(&format!("patient/{ty}.rs")), "{ty}");
         }
-        assert_eq!(form.scopes.types.len(), smart::PATIENT_TYPES.len());
-        assert_eq!(form.fields[0].value, "Preview");
+        let env = reg
+            .fields
+            .iter()
+            .find(|f| f.label == "Environment")
+            .unwrap();
+        assert_eq!(env.value, "Preview");
+        assert!(reg.store.ends_with("--env preview"));
     }
 
     #[test]
@@ -352,23 +241,34 @@ mod tests {
         config
             .client_ids
             .set(Environment::Production, Some("0oaEXAMPLEclient9876".into()));
-        let value = clients(&config);
-        assert_eq!(value["production"]["configured"], true);
-        assert_eq!(value["production"]["client_id_ends_with"], "9876");
-        assert_eq!(value["preview"]["configured"], false);
-        assert_eq!(
-            value["preview"]["register"],
-            "athena registration --env preview"
-        );
+        let value = with_client(&json!({"schema": "cli-info/v1"}), &config).unwrap();
+        assert_eq!(value["client"]["configured"], true);
+        assert_eq!(value["client"]["registration"], "production");
+        assert_eq!(value["client"]["client_type"], "public");
+        assert_eq!(value["client"]["stored_in"], "config");
+        assert_eq!(value["client"]["client_id_ends_with"], "9876");
         assert!(!value.to_string().contains("0oaEXAMPLE"));
+        assert!(status_line(&config).ends_with("id ending 9876"));
         assert_eq!(ends_with("ab"), "ab");
+
+        let value = with_client(&json!({}), &Config::default()).unwrap();
+        assert_eq!(value["client"]["configured"], false);
+        assert!(value["client"].get("client_id_ends_with").is_none());
     }
 
     #[test]
-    fn wrapping_keeps_every_word() {
-        let text = smart::PATIENT_TYPES.join(", ");
-        let lines = wrap(&text, 30);
-        assert!(lines.iter().all(|l| l.len() <= 30));
-        assert_eq!(lines.join(" "), text);
+    fn a_missing_client_names_the_registration_and_store_commands() {
+        let err = missing_client(&Config::default(), Environment::Preview);
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(err.reason(), Some(pk_med_smart::registration::NO_CLIENT));
+        let text = format!("{} {}", err.message(), err.remedy().unwrap_or_default());
+        for want in [
+            "preview",
+            "`athena registration --env preview`",
+            "docs/registration.md",
+            "athena config set client-id <CLIENT_ID> --env preview",
+        ] {
+            assert!(text.contains(want), "{want}: {text}");
+        }
     }
 }

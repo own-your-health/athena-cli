@@ -31,9 +31,9 @@ pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.3
 pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.2" }
 # medical-common: the SMART sign-in, the FHIR client, and the
 # health-records/v1 stream and DTOs. Same cli-common tag.
-pk-med-smart = { git = "https://github.com/piekstra/medical-common", tag = "v0.6.4", features = ["browser"] }
-pk-med-fhir = { git = "https://github.com/piekstra/medical-common", tag = "v0.6.4" }
-pk-med-records = { git = "https://github.com/piekstra/medical-common", tag = "v0.6.4" }
+pk-med-smart = { git = "https://github.com/piekstra/medical-common", tag = "v0.6.8", features = ["browser"] }
+pk-med-fhir = { git = "https://github.com/piekstra/medical-common", tag = "v0.6.8" }
+pk-med-records = { git = "https://github.com/piekstra/medical-common", tag = "v0.6.8" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }

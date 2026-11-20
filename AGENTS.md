@@ -11,7 +11,7 @@ from [cli-common](https://github.com/piekstra/cli-common).
 | File | Owns |
 |---|---|
 | `src/cli.rs` | the clap tree, the `Ctx`, every command's handler, exit codes, `info` |
-| `src/registration.rs` | `athena registration` (`registration/v1`): the Developer Portal's choices and form values, which follow `docs/registration.md` (change the two together), and the `client_ids` that `info` and `auth status` show, by each id's last four characters |
+| `src/registration.rs` | `athena registration`: medical-common's `pk_med_smart::Registration` (`registration/v1`) with the Developer Portal's choices and form values, which follow `docs/registration.md` (change the two together); `missing_client`; and the `client` member of `info` and `auth status` (the Production client, with `client_id_ends_with` in place of the whole id) |
 | `src/config.rs` | `config.json`: client ids per environment, redirect ports, practice profiles and their FHIR base |
 | `src/env.rs` | athenahealth's Preview and Production hosts, and custom servers |
 | `src/directory.rs` | athenahealth's FHIR base URL Bundle: download, the cut-down local copy, search |
@@ -28,7 +28,7 @@ from [cli-common](https://github.com/piekstra/cli-common).
 | `tests/support/mock.rs` | a mock athenahealth practice on 127.0.0.1 (also `make mock`) |
 | `docs/api.md` | athenahealth's behaviour and traps, quoted; read before changing sign-in or export |
 
-medical-common is pinned at v0.6.4, on the same cli-common tag (v0.33.2).
+medical-common is pinned at v0.6.8, on the same cli-common tag (v0.33.2).
 From `pk-med-smart`: discovery, the scope set, the launch (`begin`, with the
 OpenID nonce) and the code exchange, `SmartSession`, `ProfileSessions` (a
 profile's sessions in the vault) and `migrate_sessions`, `SignInWindow`

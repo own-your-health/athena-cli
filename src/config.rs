@@ -233,25 +233,10 @@ impl Config {
             return Ok(id.clone());
         }
         let env = practice.environment;
-        self.client_ids.get(env).map(str::to_string).ok_or_else(|| {
-            let error = CliError::Usage(format!(
-                "no client id is configured for the {env} environment"
-            ));
-            if env == Environment::Custom {
-                return error.with_remedy(format!(
-                    "register an app with whoever runs this FHIR server, then run `athena \
-                     config set client-id <ID> --env custom` ({})",
-                    crate::registration::DOC_URL
-                ));
-            }
-            error.with_remedy(format!(
-                "register an app for athena with athenahealth: `{}` prints what to enter, \
-                 and {} walks through it; then run `{}`",
-                crate::registration::command(env),
-                crate::registration::DOC_URL,
-                crate::registration::store_command(env).replace("<CLIENT_ID>", "<ID>"),
-            ))
-        })
+        self.client_ids
+            .get(env)
+            .map(str::to_string)
+            .ok_or_else(|| crate::registration::missing_client(self, env))
     }
 
     pub fn scope_version(&self) -> ScopeSpelling {

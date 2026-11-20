@@ -134,7 +134,8 @@ fn info_describes_the_cli() {
             "records",
             "documents",
             "api",
-            "login-profiles"
+            "login-profiles",
+            "registration"
         ])
     );
 }
@@ -268,18 +269,14 @@ fn a_missing_client_id_names_the_registration_doc() {
     let (code, v, _) = run_as(&home, &["--json", "auth", "login", "--org", "sandbox"]);
     assert_eq!(code, 2);
     let message = v["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("https://github.com/piekstra/athena-cli/blob/main/docs/registration.md"),
-        "{message}"
-    );
-    assert!(
-        message.contains("`athena registration --env preview`"),
-        "{message}"
-    );
-    assert!(
-        message.contains("`athena config set client-id <ID> --env preview`"),
-        "{message}"
-    );
+    for want in [
+        "no athenahealth client is configured for the preview registration",
+        "docs/registration.md",
+        "`athena registration --env preview`",
+        "`athena config set client-id <CLIENT_ID> --env preview`",
+    ] {
+        assert!(message.contains(want), "{want}: {message}");
+    }
 }
 
 #[test]
@@ -288,11 +285,13 @@ fn registration_prints_the_portal_form() {
     let (code, v, _) = run(&home, &["--json", "registration"]);
     assert_eq!(code, 0);
     assert_eq!(v["schema"], "registration/v1");
-    assert_eq!(v["environment"], "production");
-    assert_eq!(v["client_type"], "public");
-    assert_eq!(v["client_secret"], false);
-    assert_eq!(v["pkce"], "S256");
+    assert_eq!(v["cli"], "athena");
+    assert_eq!(v["vendor"], "athenahealth");
+    assert_eq!(v["portal"], "https://developer.api.athena.io/ams-portal/");
+    assert_eq!(v["doc"], "docs/registration.md");
     assert_eq!(v["launch"], "standalone-patient");
+    assert_eq!(v["client_type"], "public");
+    assert_eq!(v["pkce"], "S256");
     assert_eq!(
         v["redirect_uris"],
         serde_json::json!([
@@ -300,25 +299,27 @@ fn registration_prints_the_portal_form() {
             "http://127.0.0.1:47817/callback"
         ])
     );
-    assert_eq!(v["scopes"]["product"], "FHIR R4 SMART V2");
-    assert_eq!(v["scopes"]["types"].as_array().unwrap().len(), 26);
+    let scopes = v["scopes"].as_array().unwrap();
+    assert_eq!(scopes.len(), 4 + 26);
+    assert!(scopes.contains(&serde_json::json!("patient/Observation.rs")));
     assert_eq!(
         v["store"],
         "athena config set client-id <CLIENT_ID> --env production"
     );
-    assert_eq!(v["configured"], false);
-    let fields: Vec<&str> = v["fields"]
+    let labels: Vec<&str> = v["fields"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|f| f["field"].as_str().unwrap())
+        .map(|f| f["label"].as_str().unwrap())
         .collect();
     assert_eq!(
-        fields,
+        labels,
         [
+            "Create a New App",
+            "App category",
+            "PHR app",
             "Environment",
             "App name",
-            "Website",
             "Description",
             "Intended end users",
             "OAuth client type",
@@ -326,8 +327,11 @@ fn registration_prints_the_portal_form() {
             "Redirect URLs"
         ]
     );
+    assert_eq!(v["urls"][0]["label"], "Website");
+    assert!(v["notes"].as_array().unwrap().len() >= 4);
 
-    // The form follows the configured ports and says what is configured.
+    // The form follows the configured ports and the environment asked for,
+    // and names no configured client id.
     athena(&home)
         .args(["config", "set", "redirect-ports", "50123,50124"])
         .assert()
@@ -345,21 +349,23 @@ fn registration_prints_the_portal_form() {
         .success();
     let (code, v, _) = run(&home, &["--json", "registration", "--env", "preview"]);
     assert_eq!(code, 0);
-    assert_eq!(v["environment"], "preview");
-    assert_eq!(v["fields"][0]["value"], "Preview");
+    assert_eq!(v["fields"][3]["value"], "Preview");
+    assert_eq!(
+        v["store"],
+        "athena config set client-id <CLIENT_ID> --env preview"
+    );
     assert_eq!(v["redirect_uris"][0], "http://127.0.0.1:50123/callback");
-    assert_eq!(v["configured"], true);
-    assert_eq!(v["client_id_ends_with"], "4321");
+    assert!(!v.to_string().contains("EXAMPLE"), "{v}");
 
     let out = athena(&home).arg("registration").output().unwrap();
     assert!(out.status.success());
     let text = String::from_utf8_lossy(&out.stdout);
     for want in [
-        "https://developer.api.athena.io/ams-portal/",
+        "Register athena with athenahealth: https://developer.api.athena.io/ams-portal/",
         "3-Legged OAuth for Patients",
         "http://127.0.0.1:50124/callback",
         "athena config set client-id <CLIENT_ID> --env production",
-        "Configured now: no.",
+        "https://github.com/piekstra/athena-cli/blob/main/docs/registration.md",
     ] {
         assert!(text.contains(want), "{want}: {text}");
     }
@@ -369,14 +375,12 @@ fn registration_prints_the_portal_form() {
 }
 
 #[test]
-fn info_and_auth_status_say_which_client_ids_are_configured() {
+fn info_and_auth_status_say_whether_a_client_is_configured() {
     let home = profiled();
-    let out = athena(&home).arg("info").output().unwrap();
-    let v = json_of(&out);
-    assert_eq!(v["client_ids"]["production"]["configured"], false);
+    let v = json_of(&athena(&home).arg("info").output().unwrap());
     assert_eq!(
-        v["client_ids"]["production"]["register"],
-        "athena registration --env production"
+        v["client"],
+        serde_json::json!({"configured": false, "registration": "production"})
     );
     athena(&home)
         .args([
@@ -390,21 +394,26 @@ fn info_and_auth_status_say_which_client_ids_are_configured() {
         .assert()
         .success();
     let v = json_of(&athena(&home).arg("info").output().unwrap());
-    assert_eq!(v["client_ids"]["production"]["configured"], true);
-    assert_eq!(v["client_ids"]["production"]["client_id_ends_with"], "9876");
-    assert_eq!(v["client_ids"]["preview"]["configured"], false);
+    assert_eq!(
+        v["client"],
+        serde_json::json!({
+            "configured": true,
+            "registration": "production",
+            "client_type": "public",
+            "stored_in": "config",
+            "client_id_ends_with": "9876"
+        })
+    );
     assert!(!v.to_string().contains("0oaEXAMPLE"), "{v}");
 
     let (code, v, _) = run_as(&home, &["--json", "auth", "status"]);
     assert_eq!(code, 0);
-    assert_eq!(v["client_ids"]["production"]["client_id_ends_with"], "9876");
+    assert_eq!(v["client"]["client_id_ends_with"], "9876");
     assert!(!v.to_string().contains("0oaEXAMPLE"), "{v}");
     let out = athena_as(&home).args(["auth", "status"]).output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     assert!(
-        text.contains(
-            "production configured (ends 9876); preview not configured (athena registration --env preview)"
-        ),
+        text.contains("Client:        public, in config (production), id ending 9876"),
         "{text}"
     );
 }

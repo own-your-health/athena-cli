@@ -102,15 +102,16 @@ registrant ([The terms you agree to](#the-terms-you-agree-to)).
 ```sh
 athena config set client-id <PREVIEW_CLIENT_ID> --env preview
 athena config set client-id <PRODUCTION_CLIENT_ID> --env production
-athena info | jq .client_ids     # each environment: configured, and the id's last four characters
+athena info | jq .client        # the Production client: configured, client_id_ends_with
 athena orgs list                 # CLIENT_ID_CONFIGURED is true for the sandbox and your practices
 ```
 
 `athena --profile <NAME> auth status` shows the same, and each sign-in's
 client id by its last four characters. `athena config show` prints the ids
-whole. A command that needs a client id that is not configured exits 2 and
-names `athena registration --env <ENV>`, this page and the `config set`
-command.
+whole. A command that needs a client id that is not configured exits 2:
+"no athenahealth client is configured for the <ENV> registration", naming
+this page, the `athena registration` command for that environment and the
+`config set` command.
 
 A practice whose FHIR server is not athenahealth's own (`--env custom`) takes
 its client id on its profile instead: `athena config set practice <slug> ...

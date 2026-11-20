@@ -559,24 +559,21 @@ pub fn run(cli: Cli) -> Result<(), CliError> {
             Ok(())
         }
         Command::Registration(args) => registration_cmd(&ctx, &args),
-        Command::Info => {
-            info(&ctx);
-            Ok(())
-        }
+        Command::Info => info(&ctx),
     }
 }
 
 fn registration_cmd(ctx: &Ctx, args: &RegistrationArgs) -> Result<(), CliError> {
-    let form = registration::form(&ctx.load()?, args.env);
+    let form = registration::form(&ctx.load()?, args.env.into());
     if ctx.json {
         output::json(&serde_json::to_value(&form).unwrap_or(Value::Null));
     } else {
-        form.render();
+        print!("{}", form.text());
     }
     Ok(())
 }
 
-fn info(ctx: &Ctx) {
+fn info(ctx: &Ctx) -> Result<(), CliError> {
     let info = CliInfo::new(
         BIN,
         VERSION,
@@ -597,17 +594,19 @@ fn info(ctx: &Ctx) {
             "documents",
             "api",
             pk_med_records::LOGIN_PROFILES,
+            pk_med_records::REGISTRATION,
         ],
     )
     .with_profiles(&["health-records/v1", pk_cli_documents::PROFILE]);
-    let mut value = serde_json::to_value(&info).unwrap_or(Value::Null);
-    // A configuration that does not parse leaves `client_ids` out rather
-    // than failing discovery; every other command reports it.
-    if let (Value::Object(map), Ok(config)) = (&mut value, ctx.load()) {
-        map.insert("client_ids".into(), registration::clients(&config));
-    }
+    // A configuration that does not parse leaves `client` out rather than
+    // failing discovery; every other command reports it.
+    let value = match ctx.load() {
+        Ok(config) => registration::with_client(&info, &config)?,
+        Err(_) => serde_json::to_value(&info).unwrap_or(Value::Null),
+    };
     // Always JSON: `info` is for machines (SPEC v1 §1.6).
     output::json(&value);
+    Ok(())
 }
 
 // ---------------------------------------------------------------- auth
@@ -915,11 +914,10 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
         ctx.note(unassigned_note(unassigned));
     }
     if ctx.json {
-        let mut value = status.to_json();
+        let mut value = registration::with_client(&status.to_json(), &config)?;
         if let Value::Object(map) = &mut value {
             map.insert("profile".into(), json!(profile.as_str()));
             map.insert("sessions".into(), Value::Array(sessions));
-            map.insert("client_ids".into(), registration::clients(&config));
             if unassigned > 0 {
                 map.insert("sign_ins_in_no_profile".into(), json!(unassigned));
             }
@@ -928,7 +926,7 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
     } else {
         status.render();
         println!("Profile:       {profile}");
-        println!("Client ids:    {}", registration::clients_line(&config));
+        println!("Client:        {}", registration::status_line(&config));
         if sessions.is_empty() {
             println!(
                 "Patients:      none signed in (athena --profile {profile} auth login --org <ORG>)"
