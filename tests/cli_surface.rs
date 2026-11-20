@@ -370,8 +370,24 @@ fn registration_prints_the_portal_form() {
         assert!(text.contains(want), "{want}: {text}");
     }
 
-    let (code, _, _) = run(&home, &["registration", "--env", "custom"]);
+    let (code, _, err) = run(&home, &["registration", "--env", "custom"]);
     assert_eq!(code, 2);
+    assert!(
+        err.contains("invalid value 'custom' for '--env <ENV>'"),
+        "{err}"
+    );
+
+    // A configuration that does not parse still gets the form, with the
+    // default ports and a warning; `info` leaves `client` out and warns.
+    std::fs::write(home.join("athena/config.json"), "{ not json").unwrap();
+    let (code, v, err) = run(&home, &["--json", "registration"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(v["redirect_uris"][0], "http://127.0.0.1:47816/callback");
+    assert!(err.contains("could not be read"), "{err}");
+    let out = athena(&home).arg("info").output().unwrap();
+    assert!(out.status.success());
+    assert!(json_of(&out).get("client").is_none());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("`client` is left out"));
 }
 
 #[test]

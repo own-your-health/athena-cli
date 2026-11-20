@@ -564,7 +564,16 @@ pub fn run(cli: Cli) -> Result<(), CliError> {
 }
 
 fn registration_cmd(ctx: &Ctx, args: &RegistrationArgs) -> Result<(), CliError> {
-    let form = registration::form(&ctx.load()?, args.env.into());
+    // The command that explains setup works even when the configuration
+    // does not: it falls back to the default redirect ports, and says so.
+    let config = ctx.load().unwrap_or_else(|e| {
+        eprintln!(
+            "warning: the configuration could not be read ({}); showing the default redirect ports",
+            e.message()
+        );
+        Config::default()
+    });
+    let form = registration::form(&config, args.env.into());
     if ctx.json {
         output::json(&serde_json::to_value(&form).unwrap_or(Value::Null));
     } else {
@@ -598,11 +607,19 @@ fn info(ctx: &Ctx) -> Result<(), CliError> {
         ],
     )
     .with_profiles(&["health-records/v1", pk_cli_documents::PROFILE]);
-    // A configuration that does not parse leaves `client` out rather than
-    // failing discovery; every other command reports it.
+    // A configuration that does not parse leaves `client` out, with a
+    // warning, rather than failing discovery or guessing. `with_client`
+    // fails only when cli-common's DTO grows a `client` of its own
+    // (medical-common DESIGN §3.8), which a test then catches.
     let value = match ctx.load() {
         Ok(config) => registration::with_client(&info, &config)?,
-        Err(_) => serde_json::to_value(&info).unwrap_or(Value::Null),
+        Err(e) => {
+            eprintln!(
+                "warning: the configuration could not be read ({}); `client` is left out",
+                e.message()
+            );
+            serde_json::to_value(&info).unwrap_or(Value::Null)
+        }
     };
     // Always JSON: `info` is for machines (SPEC v1 §1.6).
     output::json(&value);
@@ -864,29 +881,7 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
         }
         match store.load(&entry.key()) {
             Ok(Some(stored)) => {
-                let usable = session::usable(&stored, now);
-                any_usable |= usable;
-                row.insert("credential_in_keychain".into(), json!(true));
-                row.insert("usable".into(), json!(usable));
-                row.insert(
-                    "client_id_ends_with".into(),
-                    json!(registration::ends_with(&stored.client_id)),
-                );
-                row.insert(
-                    "refresh_token".into(),
-                    json!(stored.tokens.refresh_token.is_some()),
-                );
-                row.insert(
-                    "access_expires_at".into(),
-                    json!(stored.tokens.expires_at.map(rfc3339)),
-                );
-                row.insert(
-                    "signin_expires_at".into(),
-                    json!(rfc3339(session::signin_expires_at(&stored))),
-                );
-                if let Some(at) = stored.refused_at {
-                    row.insert("refused_at".into(), json!(rfc3339(at)));
-                }
+                any_usable |= stored_columns(&mut row, &stored, now);
             }
             Ok(None) => {
                 row.insert("credential_in_keychain".into(), json!(false));
@@ -947,6 +942,34 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
         }
     }
     Ok(())
+}
+
+/// The columns `auth status` shows for a stored sign-in, and whether it is
+/// usable. Its client id appears by its last four characters only.
+fn stored_columns(row: &mut Map<String, Value>, stored: &SmartSession, now: u64) -> bool {
+    let usable = session::usable(stored, now);
+    row.insert("credential_in_keychain".into(), json!(true));
+    row.insert("usable".into(), json!(usable));
+    row.insert(
+        "client_id_ends_with".into(),
+        json!(registration::ends_with(&stored.client_id)),
+    );
+    row.insert(
+        "refresh_token".into(),
+        json!(stored.tokens.refresh_token.is_some()),
+    );
+    row.insert(
+        "access_expires_at".into(),
+        json!(stored.tokens.expires_at.map(rfc3339)),
+    );
+    row.insert(
+        "signin_expires_at".into(),
+        json!(rfc3339(session::signin_expires_at(stored))),
+    );
+    if let Some(at) = stored.refused_at {
+        row.insert("refused_at".into(), json!(rfc3339(at)));
+    }
+    usable
 }
 
 fn auth_relabel(ctx: &Ctx, args: RelabelCmd) -> Result<(), CliError> {
@@ -2275,6 +2298,18 @@ fn api(ctx: &Ctx, args: ApiCmd) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_stored_sign_in_shows_its_client_id_by_its_last_four_characters() {
+        let now = 1_800_000_000;
+        let mut stored = session::test_session("clinic", "p1", None, now);
+        stored.client_id = "0oaEXAMPLEclient9876".into();
+        let mut row = Map::new();
+        assert!(stored_columns(&mut row, &stored, now));
+        assert_eq!(row["client_id_ends_with"], "9876");
+        assert!(!Value::Object(row).to_string().contains("0oaEXAMPLE"));
+    }
+
     use super::*;
 
     #[test]

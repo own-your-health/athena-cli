@@ -271,4 +271,18 @@ mod tests {
             assert!(text.contains(want), "{want}: {text}");
         }
     }
+
+    #[test]
+    fn production_keeps_the_shared_remedy_and_custom_names_no_registration() {
+        let err = missing_client(&Config::default(), Environment::Production);
+        let remedy = err.remedy().unwrap_or_default();
+        assert!(remedy.contains("`athena registration` prints"), "{remedy}");
+        assert!(remedy.contains("--env production"), "{remedy}");
+
+        let err = missing_client(&Config::default(), Environment::Custom);
+        assert_eq!(err.reason(), Some(pk_med_smart::registration::NO_CLIENT));
+        let remedy = err.remedy().unwrap_or_default();
+        assert!(remedy.contains("--env custom"), "{remedy}");
+        assert!(!remedy.contains("athena registration"), "{remedy}");
+    }
 }
