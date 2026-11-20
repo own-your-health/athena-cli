@@ -11,6 +11,7 @@ from [cli-common](https://github.com/piekstra/cli-common).
 | File | Owns |
 |---|---|
 | `src/cli.rs` | the clap tree, the `Ctx`, every command's handler, exit codes, `info` |
+| `src/registration.rs` | `athena registration` (`registration/v1`): the Developer Portal's choices and form values, which follow `docs/registration.md` (change the two together), and the `client_ids` that `info` and `auth status` show, by each id's last four characters |
 | `src/config.rs` | `config.json`: client ids per environment, redirect ports, practice profiles and their FHIR base |
 | `src/env.rs` | athenahealth's Preview and Production hosts, and custom servers |
 | `src/directory.rs` | athenahealth's FHIR base URL Bundle: download, the cut-down local copy, search |
@@ -96,7 +97,8 @@ Medical records are the most sensitive data a household has.
   12 hex digits of SHA-256 over the ID token's `iss` and `sub`). A sign-in
   whose login differs from its profile's others is stored with a warning.
 - The client id is configuration (`config set client-id`), never code: each
-  household registers its own app (`docs/registration.md`).
+  user registers their own app (`docs/registration.md`, `athena registration`).
+  `info` and `auth status` show an id by its last four characters only.
 - Renewals run under `pk_cli_auth::refresh_lock::RefreshLock`, so two
   processes never present one refresh token at once.
 - Tests and `make verify` never read the real Keychain or vault: the

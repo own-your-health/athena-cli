@@ -28,6 +28,7 @@ use crate::export;
 use crate::fhir::{Client, Live};
 use crate::login;
 use crate::logout;
+use crate::registration::{self, RegisterEnv};
 use crate::session::{self, SessionEntry, SessionIndex, Store, PROFILE_ENV};
 use crate::stream::{self, Header};
 use crate::{unix_now, BIN, REPO, VERSION};
@@ -85,8 +86,19 @@ pub enum Command {
     SelfUpdate(SelfUpdateArgs),
     /// Print a shell completion script.
     Completions { shell: Shell },
+    /// What to enter in athenahealth's Developer Portal to register an app
+    /// for athena (registration/v1).
+    Registration(RegistrationArgs),
     /// Machine-readable capability discovery (cli-info/v1).
     Info,
+}
+
+#[derive(Args, Debug)]
+pub struct RegistrationArgs {
+    /// The environment to register in: production for real practices,
+    /// preview for athenahealth's sandbox.
+    #[arg(long, value_enum, default_value_t = RegisterEnv::Production)]
+    pub env: RegisterEnv,
 }
 
 /// Which signed-in patient a command reads.
@@ -546,11 +558,22 @@ pub fn run(cli: Cli) -> Result<(), CliError> {
             clap_complete::generate(shell, &mut Cli::command(), BIN, &mut std::io::stdout());
             Ok(())
         }
+        Command::Registration(args) => registration_cmd(&ctx, &args),
         Command::Info => {
             info(&ctx);
             Ok(())
         }
     }
+}
+
+fn registration_cmd(ctx: &Ctx, args: &RegistrationArgs) -> Result<(), CliError> {
+    let form = registration::form(&ctx.load()?, args.env);
+    if ctx.json {
+        output::json(&serde_json::to_value(&form).unwrap_or(Value::Null));
+    } else {
+        form.render();
+    }
+    Ok(())
 }
 
 fn info(ctx: &Ctx) {
@@ -577,9 +600,14 @@ fn info(ctx: &Ctx) {
         ],
     )
     .with_profiles(&["health-records/v1", pk_cli_documents::PROFILE]);
+    let mut value = serde_json::to_value(&info).unwrap_or(Value::Null);
+    // A configuration that does not parse leaves `client_ids` out rather
+    // than failing discovery; every other command reports it.
+    if let (Value::Object(map), Ok(config)) = (&mut value, ctx.load()) {
+        map.insert("client_ids".into(), registration::clients(&config));
+    }
     // Always JSON: `info` is for machines (SPEC v1 §1.6).
-    let _ = ctx;
-    output::json(&serde_json::to_value(&info).unwrap_or(Value::Null));
+    output::json(&value);
 }
 
 // ---------------------------------------------------------------- auth
@@ -809,7 +837,8 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
     if let Some(org) = &select.org {
         config::validate_slug(org)?;
     }
-    let profile = ctx.profile(&ctx.load()?)?;
+    let config = ctx.load()?;
+    let profile = ctx.profile(&config)?;
     let index = ctx.index()?;
     let entries = index.matching(
         Some(profile.as_str()),
@@ -840,6 +869,10 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
                 any_usable |= usable;
                 row.insert("credential_in_keychain".into(), json!(true));
                 row.insert("usable".into(), json!(usable));
+                row.insert(
+                    "client_id_ends_with".into(),
+                    json!(registration::ends_with(&stored.client_id)),
+                );
                 row.insert(
                     "refresh_token".into(),
                     json!(stored.tokens.refresh_token.is_some()),
@@ -886,6 +919,7 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
         if let Value::Object(map) = &mut value {
             map.insert("profile".into(), json!(profile.as_str()));
             map.insert("sessions".into(), Value::Array(sessions));
+            map.insert("client_ids".into(), registration::clients(&config));
             if unassigned > 0 {
                 map.insert("sign_ins_in_no_profile".into(), json!(unassigned));
             }
@@ -894,6 +928,7 @@ fn auth_status(ctx: &Ctx, select: &Select) -> Result<(), CliError> {
     } else {
         status.render();
         println!("Profile:       {profile}");
+        println!("Client ids:    {}", registration::clients_line(&config));
         if sessions.is_empty() {
             println!(
                 "Patients:      none signed in (athena --profile {profile} auth login --org <ORG>)"

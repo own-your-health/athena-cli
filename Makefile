@@ -60,13 +60,15 @@ mock:
 # Offline smoke test: no keychain, no network, no athenahealth.
 smoke: build
 	@./target/debug/$(BIN) --version >/dev/null
-	@./target/debug/$(BIN) info >/dev/null
 	@./target/debug/$(BIN) completions bash >/dev/null
 	@./target/debug/$(BIN) auth login --help >/dev/null
 	@./target/debug/$(BIN) records export --help >/dev/null
 	@./target/debug/$(BIN) documents download --help >/dev/null
 	@./target/debug/$(BIN) profiles migrate --help >/dev/null
 	@mkdir -p $(SMOKE_HOME)
+	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) info >/dev/null
+	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json registration >/dev/null
+	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) registration --env preview >/dev/null
 	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json profiles add smoke >/dev/null
 	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json profiles list >/dev/null
 	@XDG_CONFIG_HOME=$(SMOKE_HOME) HOME=$(SMOKE_HOME) ./target/debug/$(BIN) --json --profile smoke auth status >/dev/null
