@@ -79,8 +79,36 @@ fn ids_before<'a>(line: &'a str, marker: &str) -> Vec<&'a str> {
         .collect()
 }
 
+/// `line` with each run of 32 or more lowercase hex digits that holds a
+/// letter blanked: a digest (a pinned SHA-256, a commit id) is not an id
+/// number, though its digits can run long enough to read as one.
+fn blank_digests(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut run = String::new();
+    let flush = |run: &mut String, out: &mut String| {
+        if run.len() >= 32 && run.chars().any(|c| c.is_ascii_lowercase()) {
+            out.extend(std::iter::repeat_n(' ', run.len()));
+        } else {
+            out.push_str(run);
+        }
+        run.clear();
+    };
+    for c in line.chars() {
+        if c.is_ascii_digit() || ('a'..='f').contains(&c) {
+            run.push(c);
+        } else {
+            flush(&mut run, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut run, &mut out);
+    out
+}
+
 fn scan_line(line: &str) -> Vec<String> {
     let mut findings = Vec::new();
+    let blanked = blank_digests(line);
+    let line = blanked.as_str();
     let phoneish: String = line.replace(['(', ')', '-', '.', ' '], "");
     for n in digits_run(line, 7).into_iter().chain(
         digits_run(&phoneish, 10)
@@ -234,6 +262,8 @@ fn the_scanner_flags_real_shapes_and_passes_dummies() {
         "Patient/a-4321.E-77",
         "athena config set practice x --practice-id 4321",
         "4321-1.portal.athenahealth.com",
+        "id bad1234567",
+        "ref 1234567890123456789012345678901234567890",
     ] {
         assert!(!scan_line(real).is_empty(), "missed: {real}");
     }
@@ -248,6 +278,8 @@ fn the_scanner_flags_real_shapes_and_passes_dummies() {
         "Organization/a-1.Practice-195900",
         "--practice-id <ID>",
         "<practice>-<brand>.portal.athenahealth.com",
+        "sha256 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "commit 3a1f2c3456789012345678901234567890123456",
     ] {
         assert!(
             scan_line(dummy).is_empty(),
