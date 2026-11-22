@@ -17,7 +17,8 @@ use crate::{smart, BIN};
 pub const PORTAL_URL: &str = "https://developer.api.athena.io/ams-portal/";
 /// The step-by-step guide, as a URL: a binary installed from a release has
 /// no checkout to find `docs/registration.md` in.
-pub const DOC_URL: &str = "https://github.com/piekstra/athena-cli/blob/main/docs/registration.md";
+pub const DOC_URL: &str =
+    "https://github.com/own-your-health/athena-cli/blob/main/docs/registration.md";
 
 /// The environments with a registration, in the order `info` lists them.
 pub const ENVIRONMENTS: [Environment; 2] = [Environment::Production, Environment::Preview];
@@ -92,7 +93,7 @@ pub fn form(config: &Config, env: Environment) -> Registration {
             "<your brand> Health Records",
             "your own brand plus what the app does",
         )
-        .url("Website", "https://github.com/piekstra/athena-cli")
+        .url("Website", "https://github.com/own-your-health/athena-cli")
         .field(
             "Description",
             "Command-line tool with which a patient or caregiver downloads their own records \

@@ -17,13 +17,13 @@ Developer Portal account (about 15 minutes, once). `athena` ships no client
 id of its own: each user registers their own app.
 
 `athena` only reads. Records go where you send them, normally into
-[`medrec`](https://github.com/piekstra/medrec-cli); nothing is sent
+[`medrec`](https://github.com/own-your-health/medrec-cli); nothing is sent
 anywhere else.
 
 ## Install
 
 ```sh
-curl -sSL https://github.com/piekstra/athena-cli/releases/latest/download/athena-aarch64-apple-darwin.tar.gz | tar xz
+curl -sSL https://github.com/own-your-health/athena-cli/releases/latest/download/athena-aarch64-apple-darwin.tar.gz | tar xz
 mv athena ~/.local/bin/        # or anywhere on PATH
 athena self-update             # later releases
 ```

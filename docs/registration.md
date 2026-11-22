@@ -45,7 +45,7 @@ register Preview first if you want to try athena on the sandbox.
    |---|---|
    | Environment | Preview |
    | App name | Your own brand plus what it does, such as "<Brand> Health Records". athenahealth's [naming guidelines][naming] refuse "athena", "athenahealth", "app", "application", "PHR", "CAPI", "test", environment words and people's names ([What the portal refused](#what-the-portal-refused-and-what-works)). |
-   | Website | Your copy of athena, or <https://github.com/piekstra/athena-cli> |
+   | Website | Your copy of athena, or <https://github.com/own-your-health/athena-cli> |
    | Description | Command-line tool with which a patient or caregiver downloads their own records from athenahealth practices to their own computer. |
    | Intended end users | The patient and approved family members or caregivers (a caregiver signs in for a child) |
    | OAuth client type | Public (native) |
