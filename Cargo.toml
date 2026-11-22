@@ -1,12 +1,12 @@
 [package]
 name = "athena-cli"
 description = "Unofficial CLI that downloads a patient's or caregiver's own records from athenahealth practices through athenahealth's patient-access FHIR API."
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 # pk-cli-auth's refresh lock uses File::try_lock (1.89).
 rust-version = "1.89"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/piekstra/athena-cli"
+repository = "https://github.com/own-your-health/athena-cli"
 authors = ["piekstra"]
 publish = false
 
@@ -19,21 +19,21 @@ name = "athena"
 path = "src/main.rs"
 
 [dependencies]
-pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.4", features = ["reqwest"] }
-pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.4" }
-pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.4" }
-pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.4" }
-pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.4" }
-pk-cli-http = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.4" }
-pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.4" }
+pk-cli-core = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.5", features = ["reqwest"] }
+pk-cli-secrets = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.5" }
+pk-cli-config = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.5" }
+pk-cli-selfupdate = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.5" }
+pk-cli-auth = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.5" }
+pk-cli-http = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.5" }
+pk-cli-documents = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.5" }
 # A sign-in window per profile, and its browser profile removed with the
 # profile.
-pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.4" }
+pk-cli-browser = { git = "https://github.com/piekstra/cli-common", tag = "v0.33.5" }
 # medical-common: the SMART sign-in, the FHIR client, and the
 # health-records/v1 stream and DTOs. Same cli-common tag.
-pk-med-smart = { git = "https://github.com/piekstra/medical-common", tag = "v0.6.9", features = ["browser"] }
-pk-med-fhir = { git = "https://github.com/piekstra/medical-common", tag = "v0.6.9" }
-pk-med-records = { git = "https://github.com/piekstra/medical-common", tag = "v0.6.9" }
+pk-med-smart = { git = "https://github.com/own-your-health/medical-common", tag = "v0.6.10", features = ["browser"] }
+pk-med-fhir = { git = "https://github.com/own-your-health/medical-common", tag = "v0.6.10" }
+pk-med-records = { git = "https://github.com/own-your-health/medical-common", tag = "v0.6.10" }
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }

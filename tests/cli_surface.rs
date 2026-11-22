@@ -271,7 +271,7 @@ fn a_missing_client_id_names_the_registration_doc() {
     let message = v["error"]["message"].as_str().unwrap();
     for want in [
         "no athenahealth client is configured for the preview registration",
-        "https://github.com/piekstra/athena-cli/blob/main/docs/registration.md",
+        "https://github.com/own-your-health/athena-cli/blob/main/docs/registration.md",
         "`athena registration --env preview`",
         "`athena config set client-id <CLIENT_ID> --env preview`",
     ] {
@@ -292,7 +292,7 @@ fn registration_prints_the_portal_form() {
     assert_eq!(v["portal"], "https://developer.api.athena.io/ams-portal/");
     assert_eq!(
         v["doc"],
-        "https://github.com/piekstra/athena-cli/blob/main/docs/registration.md"
+        "https://github.com/own-your-health/athena-cli/blob/main/docs/registration.md"
     );
     assert_eq!(v["launch"], "standalone-patient");
     assert_eq!(v["client_type"], "public");
@@ -374,7 +374,7 @@ fn registration_prints_the_portal_form() {
         "3-Legged OAuth for Patients",
         "http://127.0.0.1:50124/callback",
         "athena config set client-id <CLIENT_ID> --env production",
-        "https://github.com/piekstra/athena-cli/blob/main/docs/registration.md",
+        "https://github.com/own-your-health/athena-cli/blob/main/docs/registration.md",
     ] {
         assert!(text.contains(want), "{want}: {text}");
     }

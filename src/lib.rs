@@ -29,7 +29,7 @@ pub const BIN: &str = "athena";
 /// This build's version, sent as the user agent and written to every stream.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Where releases come from.
-pub const REPO: &str = "piekstra/athena-cli";
+pub const REPO: &str = "own-your-health/athena-cli";
 
 /// Seconds since the Unix epoch.
 pub fn unix_now() -> i64 {
