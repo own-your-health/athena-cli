@@ -504,9 +504,9 @@ checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 
 [[package]]
 name = "cookie"
-version = "0.18.2"
+version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "percent-encoding",
  "time",
@@ -1535,8 +1535,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-auth"
-version = "0.33.5"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.33.5#478a2eeccb407b8d4f49b94d9e5f9050c4f57a23"
+version = "0.37.5"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.37.5#2299b89fb7a2d4fe7257d639db49cedd09fcfff9"
 dependencies = [
  "chacha20poly1305",
  "clap",
@@ -1551,8 +1551,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-browser"
-version = "0.33.5"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.33.5#478a2eeccb407b8d4f49b94d9e5f9050c4f57a23"
+version = "0.37.5"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.37.5#2299b89fb7a2d4fe7257d639db49cedd09fcfff9"
 dependencies = [
  "clap",
  "ctrlc",
@@ -1566,8 +1566,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-config"
-version = "0.33.5"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.33.5#478a2eeccb407b8d4f49b94d9e5f9050c4f57a23"
+version = "0.37.5"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.37.5#2299b89fb7a2d4fe7257d639db49cedd09fcfff9"
 dependencies = [
  "pk-cli-core",
  "serde",
@@ -1576,8 +1576,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-core"
-version = "0.33.5"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.33.5#478a2eeccb407b8d4f49b94d9e5f9050c4f57a23"
+version = "0.37.5"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.37.5#2299b89fb7a2d4fe7257d639db49cedd09fcfff9"
 dependencies = [
  "clap",
  "libc",
@@ -1588,8 +1588,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-documents"
-version = "0.33.5"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.33.5#478a2eeccb407b8d4f49b94d9e5f9050c4f57a23"
+version = "0.37.5"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.37.5#2299b89fb7a2d4fe7257d639db49cedd09fcfff9"
 dependencies = [
  "pk-cli-core",
  "serde",
@@ -1598,8 +1598,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-http"
-version = "0.33.5"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.33.5#478a2eeccb407b8d4f49b94d9e5f9050c4f57a23"
+version = "0.37.5"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.37.5#2299b89fb7a2d4fe7257d639db49cedd09fcfff9"
 dependencies = [
  "clap",
  "pk-cli-core",
@@ -1609,8 +1609,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-secrets"
-version = "0.33.5"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.33.5#478a2eeccb407b8d4f49b94d9e5f9050c4f57a23"
+version = "0.37.5"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.37.5#2299b89fb7a2d4fe7257d639db49cedd09fcfff9"
 dependencies = [
  "clap",
  "keyring",
@@ -1623,8 +1623,8 @@ dependencies = [
 
 [[package]]
 name = "pk-cli-selfupdate"
-version = "0.33.5"
-source = "git+https://github.com/piekstra/cli-common?tag=v0.33.5#478a2eeccb407b8d4f49b94d9e5f9050c4f57a23"
+version = "0.37.5"
+source = "git+https://github.com/piekstra/cli-common?tag=v0.37.5#2299b89fb7a2d4fe7257d639db49cedd09fcfff9"
 dependencies = [
  "clap",
  "flate2",
@@ -1637,8 +1637,8 @@ dependencies = [
 
 [[package]]
 name = "pk-med-fhir"
-version = "0.6.10"
-source = "git+https://github.com/own-your-health/medical-common?tag=v0.6.10#024d89d56540b55430bd9f665dd318f70104d0ea"
+version = "0.6.12"
+source = "git+https://github.com/own-your-health/medical-common?tag=v0.6.12#22e63c6c67d7500f3615758d2899109509a0d236"
 dependencies = [
  "base64 0.22.1",
  "pk-cli-core",
@@ -1649,8 +1649,8 @@ dependencies = [
 
 [[package]]
 name = "pk-med-records"
-version = "0.6.10"
-source = "git+https://github.com/own-your-health/medical-common?tag=v0.6.10#024d89d56540b55430bd9f665dd318f70104d0ea"
+version = "0.6.12"
+source = "git+https://github.com/own-your-health/medical-common?tag=v0.6.12#22e63c6c67d7500f3615758d2899109509a0d236"
 dependencies = [
  "pk-cli-core",
  "pk-med-fhir",
@@ -1660,8 +1660,8 @@ dependencies = [
 
 [[package]]
 name = "pk-med-smart"
-version = "0.6.10"
-source = "git+https://github.com/own-your-health/medical-common?tag=v0.6.10#024d89d56540b55430bd9f665dd318f70104d0ea"
+version = "0.6.12"
+source = "git+https://github.com/own-your-health/medical-common?tag=v0.6.12#22e63c6c67d7500f3615758d2899109509a0d236"
 dependencies = [
  "base64 0.22.1",
  "pk-cli-auth",
