@@ -28,6 +28,7 @@ use crate::export;
 use crate::fhir::{Client, Live};
 use crate::login;
 use crate::logout;
+use crate::practice;
 use crate::registration::{self, RegisterEnv};
 use crate::session::{self, SessionEntry, SessionIndex, Store, PROFILE_ENV};
 use crate::stream::{self, Header};
@@ -1939,25 +1940,30 @@ fn records_export(ctx: &Ctx, args: ExportCmd) -> Result<(), CliError> {
 }
 
 fn stream_header(ctx: &Ctx, entry: &SessionEntry, since: Option<&str>) -> Result<Header, CliError> {
-    let name = ctx
-        .load()?
-        .practices
-        .get(&entry.org)
-        .map(|p| p.display_name(&entry.org))
-        .unwrap_or_else(|| {
-            if entry.org == config::SANDBOX_ORG {
-                Practice::sandbox().display_name(&entry.org)
-            } else {
-                entry.org.clone()
-            }
-        });
+    let config = ctx.load()?;
+    // Only an athenahealth-wide sign-in reads the cache, and a cache that
+    // does not read costs the name, never the export.
+    let named = practice::header_name(&config, &entry.org, &entry.patient, || {
+        Directory::load(&ctx.directory_path()?)
+    });
+    if let Some(e) = &named.directory_error {
+        ctx.note(format!(
+            "The practice directory cache does not read ({e}), so the export names the record's practice from practice profiles only. athena orgs refresh downloads it again."
+        ));
+    }
+    if let practice::Source::Unnamed(id) = &named.source {
+        ctx.note(format!(
+            "This record is at athenahealth practice {id}, which no practice profile names, so the export calls it \"{}\". To name it: athena orgs search {id}, then athena config set practice <SLUG> --name <NAME> --practice-id {id} --brand-id <ID> --csg-id <ID>.",
+            named.name
+        ));
+    }
     Ok(stream::header(
         stream::Organization {
             id: entry.org.clone(),
-            name,
+            name: named.name,
             fhir_base: entry.fhir_base.clone(),
             vendor: Some(stream::VENDOR.into()),
-            location: None,
+            location: named.location,
             aliases: Vec::new(),
         },
         stream::PatientContext {

@@ -119,7 +119,7 @@ keeps it. `athena --profile <NAME> auth status` shows each sign-in's end
 | `auth status` / `auth logout` | Each sign-in's state (`auth-status/v1`), with whether each environment's client id is configured (`clients`, the id by its last four characters). Each sign-in shows its own client id the same way (`client_id_ends_with`), left out for an id under 12 characters; remove one or all |
 | `auth relabel --org <ORG> --from <LABEL> --to <LABEL>` | Rename a sign-in's label (`auth-relabel/v1`), in the local index only: no keychain, no network |
 | `patients list [--org <ORG>]` | The patients signed in, each with `self` or `proxy` (`patient-list/v1`) |
-| `records export --patient <ID> [--since D] --ndjson` | Every resource the practice serves to the patient, files included, as `records-stream/v1` |
+| `records export --patient <ID> [--since D] --ndjson` | Every resource the practice serves to the patient, files included, as `records-stream/v1`. For an athenahealth-wide sign-in, the header names the record's practice: a practice profile with its practice id, else the directory when it lists one name ([docs/api.md](docs/api.md#which-practice-a-record-is-at)) |
 | `documents list\|download` | Visit notes, reports and results' forms (`documents/v1`) |
 | `api GET <path>` | One FHIR read as the signed-in patient |
 | `config path\|show\|set\|unset` | Client ids, redirect ports, the scope version (`v2`, or `v1` for an app registered with SMART V1 scopes only), practice profiles |

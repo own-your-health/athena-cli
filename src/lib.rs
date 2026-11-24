@@ -19,6 +19,7 @@ pub mod http;
 pub mod login;
 pub mod logout;
 pub mod oauth;
+pub mod practice;
 pub mod registration;
 pub mod session;
 pub mod smart;

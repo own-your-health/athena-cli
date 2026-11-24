@@ -446,6 +446,53 @@ exchange or ID token names `athena --profile <profile> auth login --org
 <org>`, and a sign-in that does not read names `athena --profile <profile>
 auth logout --org <org> --patient <id>`, then `auth login`.
 
+### Which practice a record is at
+
+An athenahealth-wide sign-in's record is at one practice, the one the
+patient picked, but no resource the server serves names it. A production
+record read through the athenahealth-wide base with v0.6.1 carried the
+practice only as ids:
+
+- Every id starts with the practice id: `a-<practiceid>.E-<chart id>` for
+  the patient, the same prefix on each Encounter.
+- `Encounter.serviceProvider` is `Organization/a-<practiceid>.Department-<id>`
+  and `Encounter.location` is `Location/a-<practiceid>.Department-<id>`. Both
+  are bare references, with no `display`.
+- Encounter's `ah-practice` extension is a bare `valueReference` to
+  `Organization/a-1.Practice-<practiceid>`, beside `ah-chart-sharing-group`.
+  Patient carries `ah-brand` (`Organization/a-<practiceid>.Brand-<id>`),
+  `ah-chart-sharing-group` and `ah-provider-group` the same way, and no
+  `managingOrganization`.
+- Every read of what those references name answered 404: the
+  `Practice-`, `Department-`, `CSG-` and `CP-` Organizations,
+  `Org-ATHENA`, and the `Department-` Location (each a `not_found` skip).
+
+The directory of practices (below) has no department ids either, so the
+department a visit was at cannot be named. From v0.6.2 the export header's
+`organization` of an athenahealth-wide production sign-in names the
+record's practice by the patient id's practice id. It keeps `id` and
+`fhir_base`, the sign-in's practice profile and base, and takes `name` from:
+
+1. a practice profile with that `practice_id`, when every such profile has
+   one name: the household's own name for it;
+2. else the cached directory, when it lists one name for that practice id;
+3. else the sign-in's practice profile, as before v0.6.2, with a note on
+   stderr naming the practice id and the `orgs search` and `config set
+   practice` that name it.
+
+`location` is the city and state that every directory entry for the
+practice id shares, when they share one. A sign-in against a practice's
+own base, and the sandbox, keep their profile's name.
+
+The name is local state, so it can change between pulls of one sign-in:
+after a practice profile is added, after `orgs refresh`, or when the cache
+does not read (a note on stderr says so, and the profiles still name it). A
+consumer keys a source on `organization.id`, which stays the sign-in's
+practice profile and is what `--org` takes, and takes `name` and
+`location` from the latest header. Every athenahealth-wide header has the
+same `fhir_base`, so a consumer that tells organizations apart by base
+alone puts every practice under the first name it saw.
+
 ### Documents and Binary
 
 - `Binary` is read-only (`GET Binary/<id>`), answering FHIR JSON with base64
@@ -516,6 +563,11 @@ athenahealth's live customers." ([FHIR Base URLs][base])
 
 `athena orgs refresh` downloads the Bundle once and keeps only name, city,
 state, ZIP and the three ids; `orgs search` reads that copy.
+
+An `Organization`'s `id` is a UUID, and its identifiers are NPI, CLIA and CCN
+numbers: none names a department. One practice id can have many entries,
+with many names (2026-11-24: 17,743 practice ids; the median has 1 entry,
+the largest 4,163).
 
 ## Retries
 
@@ -619,6 +671,7 @@ so the old profile is exported first, and kept while the old portal is.
 | A 429 can mean the daily limit, where a retry only adds load | Retried only with a short `Retry-After` |
 | A search by `patient` alone for MedicationRequest answers 403 | Sends every `intent` value with `patient` |
 | The sandbox and a production practice answer 404 to every read of a referenced Practitioner, Organization, Location or Medication, with all four granted | Each is a `not_found` skip; the export stays complete |
+| No resource of an athenahealth-wide record names its practice: Encounter's `serviceProvider`, `location` and `ah-practice` are bare references, and their reads answer 404 | The header names the practice by the patient id's practice id, from a practice profile or the directory (v0.6.2) |
 | A clinical note can carry no file (`_data` with `data-absent-reason` `unknown`) | A `no_file` skip in `documents download` |
 | An image attachment's `Binary/<id>` can answer 404 on every base, with `Binary` granted | A `not_found` skip; the export stays complete |
 | athenahealth's login widget signs in whoever is signed in in that browser already, so a second parent signing in in the same browser gets the first parent's records | Each login profile signs in in its own Chrome profile (v0.4.0); `--no-browser` asks for a private window; a sign-in from another login than its profile's others is stored with a warning |
