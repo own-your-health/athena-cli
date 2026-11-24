@@ -210,4 +210,8 @@ athenahealth's wording: [docs/api.md](docs/api.md).
 - [docs/api.md](docs/api.md): athenahealth's behaviour and traps, with its wording
 - [AGENTS.md](AGENTS.md): working on the code
 
-Licensed under MIT or Apache-2.0.
+## License
+
+Copyright (C) 2026 piekstra. Licensed under the GNU Affero General Public
+License, version 3 only (AGPL-3.0-only); see [LICENSE](LICENSE). Releases up
+to and including v0.6.1 were published under MIT OR Apache-2.0.
