@@ -1941,11 +1941,16 @@ fn records_export(ctx: &Ctx, args: ExportCmd) -> Result<(), CliError> {
 
 fn stream_header(ctx: &Ctx, entry: &SessionEntry, since: Option<&str>) -> Result<Header, CliError> {
     let config = ctx.load()?;
-    let directory_path = ctx.directory_path()?;
-    // A cache that does not read only costs the name, never the export.
+    // Only an athenahealth-wide sign-in reads the cache, and a cache that
+    // does not read costs the name, never the export.
     let named = practice::header_name(&config, &entry.org, &entry.patient, || {
-        Directory::load(&directory_path).ok().flatten()
+        Directory::load(&ctx.directory_path()?)
     });
+    if let Some(e) = &named.directory_error {
+        ctx.note(format!(
+            "The practice directory cache does not read ({e}), so the export names the record's practice from practice profiles only. athena orgs refresh downloads it again."
+        ));
+    }
     if let practice::Source::Unnamed(id) = &named.source {
         ctx.note(format!(
             "This record is at athenahealth practice {id}, which no practice profile names, so the export calls it \"{}\". To name it: athena orgs search {id}, then athena config set practice <SLUG> --name <NAME> --practice-id {id} --brand-id <ID> --csg-id <ID>.",

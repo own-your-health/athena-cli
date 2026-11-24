@@ -484,6 +484,15 @@ record's practice by the patient id's practice id. It keeps `id` and
 practice id shares, when they share one. A sign-in against a practice's
 own base, and the sandbox, keep their profile's name.
 
+The name is local state, so it can change between pulls of one sign-in:
+after a practice profile is added, after `orgs refresh`, or when the cache
+does not read (a note on stderr says so, and the profiles still name it). A
+consumer keys a source on `organization.id`, which stays the sign-in's
+practice profile and is what `--org` takes, and takes `name` and
+`location` from the latest header. Every athenahealth-wide header has the
+same `fhir_base`, so a consumer that tells organizations apart by base
+alone puts every practice under the first name it saw.
+
 ### Documents and Binary
 
 - `Binary` is read-only (`GET Binary/<id>`), answering FHIR JSON with base64

@@ -12,6 +12,8 @@
 
 use std::collections::BTreeSet;
 
+use pk_cli_core::CliError;
+
 use crate::config::{Config, Practice, SANDBOX_ORG};
 use crate::directory::Directory;
 use crate::env::Environment;
@@ -30,9 +32,12 @@ pub fn practice_id_of(id: &str) -> Option<&str> {
 pub struct Named {
     pub name: String,
     /// City and state, when every directory entry for the practice shares
-    /// them.
+    /// one of each.
     pub location: Option<String>,
     pub source: Source,
+    /// Why the directory cache did not read, when it was needed and did not.
+    /// The name then comes from the practice profiles alone.
+    pub directory_error: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,37 +54,74 @@ pub enum Source {
     Unnamed(String),
 }
 
+/// A name as compared: trimmed, inner whitespace collapsed, lowercase. Two
+/// entries that differ only in case or spacing are one name.
+fn key(name: &str) -> String {
+    name.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+/// A name as written into the header: trimmed, inner whitespace collapsed.
+fn tidy(name: &str) -> String {
+    name.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The one name of `names`, by [`key`], in the spelling it first came in.
+fn single<'a>(names: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    let mut seen = BTreeSet::new();
+    let distinct: Vec<&str> = names
+        .into_iter()
+        .filter(|name| {
+            let k = key(name);
+            !k.is_empty() && seen.insert(k)
+        })
+        .collect();
+    match distinct.as_slice() {
+        [name] => Some(tidy(name)),
+        _ => None,
+    }
+}
+
 /// The name the export header gives the organization of a sign-in at
 /// practice profile `org` for `patient`. `directory` is read only for an
-/// athenahealth-wide production sign-in.
+/// athenahealth-wide production sign-in; an error from it is reported in
+/// [`Named::directory_error`] and never fails the export.
 pub fn header_name(
     config: &Config,
     org: &str,
     patient: &str,
-    directory: impl FnOnce() -> Option<Directory>,
+    directory: impl FnOnce() -> Result<Option<Directory>, CliError>,
 ) -> Named {
     let own = config
         .practices
         .get(org)
         .cloned()
         .or_else(|| (org == SANDBOX_ORG).then(Practice::sandbox));
-    let sign_in = |source| Named {
-        name: own
-            .as_ref()
-            .map(|p| p.display_name(org))
-            .unwrap_or_else(|| org.to_string()),
-        location: None,
-        source,
-    };
+    let own_name = own
+        .as_ref()
+        .map(|p| p.display_name(org))
+        .unwrap_or_else(|| org.to_string());
     let athenahealth_wide = own.as_ref().is_some_and(|p| {
         p.environment == Environment::Production && p.practice_id.is_none() && p.fhir_base.is_none()
     });
     let practice = match practice_id_of(patient) {
         Some(p) if athenahealth_wide => p,
-        _ => return sign_in(Source::SignIn),
+        _ => {
+            return Named {
+                name: own_name,
+                location: None,
+                source: Source::SignIn,
+                directory_error: None,
+            }
+        }
     };
 
-    let directory = directory();
+    let (directory, directory_error) = match directory() {
+        Ok(d) => (d, None),
+        Err(e) => (None, Some(e.to_string())),
+    };
     let listed: Vec<_> = directory
         .iter()
         .flat_map(|d| d.entries.iter())
@@ -87,40 +129,49 @@ pub fn header_name(
         .collect();
     let places: BTreeSet<_> = listed
         .iter()
-        .map(|e| (e.city.clone(), e.state.clone()))
+        .map(|e| (e.city.as_deref().map(key), e.state.as_deref().map(key)))
         .collect();
-    let location = match places.into_iter().collect::<Vec<_>>().as_slice() {
-        [(Some(city), Some(state))] => Some(format!("{city}, {state}")),
+    // One place across every entry: the first entry's spelling of it.
+    let location = match places.len() {
+        1 => listed.first().and_then(|e| {
+            Some(format!(
+                "{}, {}",
+                tidy(e.city.as_deref()?),
+                tidy(e.state.as_deref()?)
+            ))
+        }),
         _ => None,
     };
+    let named = |name: String, source| Named {
+        name,
+        location: location.clone(),
+        source,
+        directory_error: directory_error.clone(),
+    };
 
-    let profiles: BTreeSet<(String, String)> = config
+    // BTreeMap order: the profiles by slug, so the slug reported is stable.
+    let profiles: Vec<(String, &String)> = config
         .practices
         .iter()
         .filter(|(_, p)| {
             p.environment == Environment::Production && p.practice_id.as_deref() == Some(practice)
         })
-        .map(|(slug, p)| (p.display_name(slug), slug.clone()))
+        .map(|(slug, p)| (p.display_name(slug), slug))
         .collect();
-    let names: BTreeSet<&String> = profiles.iter().map(|(name, _)| name).collect();
-    if names.len() == 1 {
-        let (name, slug) = profiles.into_iter().next().unwrap_or_default();
-        return Named {
-            name,
-            location,
-            source: Source::Profile(slug),
-        };
+    if let Some(name) = single(profiles.iter().map(|(name, _)| name.as_str())) {
+        if let Some((_, slug)) = profiles.first() {
+            return named(name, Source::Profile((*slug).clone()));
+        }
     }
-
-    let names: BTreeSet<&str> = listed.iter().map(|e| e.name.as_str()).collect();
-    if let [name] = names.into_iter().collect::<Vec<_>>().as_slice() {
-        return Named {
-            name: (*name).to_string(),
-            location,
-            source: Source::Directory,
-        };
+    if let Some(name) = single(listed.iter().map(|e| e.name.as_str())) {
+        return named(name, Source::Directory);
     }
-    sign_in(Source::Unnamed(practice.to_string()))
+    Named {
+        name: own_name,
+        location: None,
+        source: Source::Unnamed(practice.to_string()),
+        directory_error,
+    }
 }
 
 #[cfg(test)]
@@ -128,9 +179,11 @@ mod tests {
     use super::*;
     use crate::directory::Entry;
 
+    const WIDE_NAME: &str = "athenahealth (every practice)";
+
     fn wide() -> Practice {
         Practice {
-            name: Some("athenahealth (every practice)".into()),
+            name: Some(WIDE_NAME.into()),
             environment: Environment::Production,
             ..Practice::default()
         }
@@ -157,10 +210,10 @@ mod tests {
         }
     }
 
-    fn entry(practice: &str, name: &str, city: &str) -> Entry {
+    fn entry(practice: &str, name: &str, city: Option<&str>) -> Entry {
         Entry {
             name: name.into(),
-            city: Some(city.into()),
+            city: city.map(str::to_string),
             state: Some("ZZ".into()),
             zip: None,
             practice_id: Some(practice.into()),
@@ -170,11 +223,19 @@ mod tests {
         }
     }
 
-    fn directory(entries: Vec<Entry>) -> Option<Directory> {
-        Some(Directory {
+    fn directory(entries: Vec<Entry>) -> Result<Option<Directory>, CliError> {
+        Ok(Some(Directory {
             entries,
             ..Directory::default()
-        })
+        }))
+    }
+
+    fn none() -> Result<Option<Directory>, CliError> {
+        Ok(None)
+    }
+
+    fn unread() -> Result<Option<Directory>, CliError> {
+        panic!("the directory is not read")
     }
 
     #[test]
@@ -184,7 +245,7 @@ mod tests {
         for id in [
             "900001.E-1001",
             "a-.E-1",
-            "a-9x.E-1",
+            "a-900001x.E-1",
             "a-900001",
             "a-900001.",
             "e-1",
@@ -197,11 +258,12 @@ mod tests {
     fn a_wide_sign_in_takes_the_name_of_the_profile_for_its_practice() {
         let cfg = config(&[("wide", wide()), ("clinic", at("900001", "Example Clinic"))]);
         let named = header_name(&cfg, "wide", "a-900001.E-1001", || {
-            directory(vec![entry("900001", "Listed Name", "Testville")])
+            directory(vec![entry("900001", "Listed Name", Some("Testville"))])
         });
         assert_eq!(named.name, "Example Clinic");
         assert_eq!(named.location.as_deref(), Some("Testville, ZZ"));
         assert_eq!(named.source, Source::Profile("clinic".into()));
+        assert_eq!(named.directory_error, None);
     }
 
     #[test]
@@ -209,14 +271,71 @@ mod tests {
         let cfg = config(&[("wide", wide())]);
         let named = header_name(&cfg, "wide", "a-900001.E-1001", || {
             directory(vec![
-                entry("900001", "Example Clinic", "Testville"),
-                entry("900001", "Example Clinic", "Othertown"),
-                entry("900002", "Another Clinic", "Testville"),
+                entry("900001", "Example Clinic", Some("Testville")),
+                entry("900001", "Example Clinic", Some("Testville")),
+                entry("900002", "Another Clinic", Some("Othertown")),
             ])
         });
         assert_eq!(named.name, "Example Clinic");
-        assert_eq!(named.location, None, "two cities");
+        assert_eq!(named.location.as_deref(), Some("Testville, ZZ"));
         assert_eq!(named.source, Source::Directory);
+    }
+
+    #[test]
+    fn a_location_needs_one_city_and_state_on_every_entry() {
+        let cfg = config(&[("wide", wide())]);
+        for entries in [
+            vec![
+                entry("900001", "Example Clinic", Some("Testville")),
+                entry("900001", "Example Clinic", Some("Othertown")),
+            ],
+            vec![entry("900001", "Example Clinic", None)],
+            vec![
+                entry("900001", "Example Clinic", Some("Testville")),
+                entry("900001", "Example Clinic", None),
+            ],
+        ] {
+            let named = header_name(&cfg, "wide", "a-900001.E-1001", || {
+                directory(entries.clone())
+            });
+            assert_eq!(named.source, Source::Directory);
+            assert_eq!(named.location, None, "{entries:?}");
+        }
+        let named = header_name(&cfg, "wide", "a-900001.E-1001", || {
+            directory(vec![
+                entry("900001", "Example Clinic", Some("Testville")),
+                entry("900001", "Example Clinic", Some(" testville ")),
+            ])
+        });
+        assert_eq!(
+            named.location.as_deref(),
+            Some("Testville, ZZ"),
+            "spelling only"
+        );
+    }
+
+    #[test]
+    fn names_that_differ_only_in_case_or_spacing_are_one() {
+        let cfg = config(&[("wide", wide())]);
+        let named = header_name(&cfg, "wide", "a-900001.E-1001", || {
+            directory(vec![
+                entry("900001", " Example  Clinic", Some("Testville")),
+                entry("900001", "EXAMPLE CLINIC", Some("Testville")),
+            ])
+        });
+        assert_eq!(named.name, "Example Clinic");
+        assert_eq!(named.source, Source::Directory);
+    }
+
+    #[test]
+    fn a_directory_that_lists_other_practices_leaves_it_unnamed() {
+        let cfg = config(&[("wide", wide())]);
+        let named = header_name(&cfg, "wide", "a-900001.E-1001", || {
+            directory(vec![entry("900002", "Another Clinic", Some("Testville"))])
+        });
+        assert_eq!(named.name, WIDE_NAME);
+        assert_eq!(named.location, None);
+        assert_eq!(named.source, Source::Unnamed("900001".into()));
     }
 
     #[test]
@@ -228,33 +347,68 @@ mod tests {
         ]);
         let named = header_name(&cfg, "wide", "a-900001.E-1001", || {
             directory(vec![
-                entry("900001", "Example Clinic", "Testville"),
-                entry("900001", "Example Pediatrics", "Testville"),
+                entry("900001", "Example Clinic", Some("Testville")),
+                entry("900001", "Example Pediatrics", Some("Testville")),
             ])
         });
-        assert_eq!(named.name, "athenahealth (every practice)");
+        assert_eq!(named.name, WIDE_NAME);
+        assert_eq!(named.location, None);
         assert_eq!(named.source, Source::Unnamed("900001".into()));
     }
 
     #[test]
-    fn two_profiles_with_one_name_name_it() {
+    fn two_profiles_with_one_name_name_it_by_the_first_slug() {
         let cfg = config(&[
             ("wide", wide()),
+            ("two", at("900001", "example clinic")),
             ("one", at("900001", "Example Clinic")),
-            ("two", at("900001", "Example Clinic")),
         ]);
-        let named = header_name(&cfg, "wide", "a-900001.E-1001", || None);
+        let named = header_name(&cfg, "wide", "a-900001.E-1001", none);
         assert_eq!(named.name, "Example Clinic");
         assert_eq!(named.source, Source::Profile("one".into()));
     }
 
     #[test]
+    fn a_profile_in_another_environment_does_not_name_it() {
+        let mut preview = at("900001", "Example Clinic");
+        preview.environment = Environment::Preview;
+        let cfg = config(&[("wide", wide()), ("test", preview)]);
+        let named = header_name(&cfg, "wide", "a-900001.E-1001", none);
+        assert_eq!(named.source, Source::Unnamed("900001".into()));
+    }
+
+    #[test]
     fn without_a_directory_or_profile_the_practice_is_unnamed() {
         let cfg = config(&[("wide", wide())]);
-        let named = header_name(&cfg, "wide", "a-900001.E-1001", || None);
-        assert_eq!(named.name, "athenahealth (every practice)");
+        let named = header_name(&cfg, "wide", "a-900001.E-1001", none);
+        assert_eq!(named.name, WIDE_NAME);
         assert_eq!(named.location, None);
         assert_eq!(named.source, Source::Unnamed("900001".into()));
+        assert_eq!(named.directory_error, None);
+    }
+
+    #[test]
+    fn a_cache_that_does_not_read_is_reported_and_profiles_still_name_it() {
+        let broken = || {
+            Err(CliError::Other(
+                "directory.json is not a directory cache".into(),
+            ))
+        };
+        let cfg = config(&[("wide", wide()), ("clinic", at("900001", "Example Clinic"))]);
+        let named = header_name(&cfg, "wide", "a-900001.E-1001", broken);
+        assert_eq!(named.name, "Example Clinic");
+        assert_eq!(named.source, Source::Profile("clinic".into()));
+        assert!(named
+            .directory_error
+            .as_deref()
+            .unwrap()
+            .contains("not a directory cache"));
+
+        let cfg = config(&[("wide", wide())]);
+        let named = header_name(&cfg, "wide", "a-900001.E-1001", broken);
+        assert_eq!(named.name, WIDE_NAME);
+        assert_eq!(named.source, Source::Unnamed("900001".into()));
+        assert!(named.directory_error.is_some());
     }
 
     #[test]
@@ -263,7 +417,6 @@ mod tests {
             ("clinic", at("900001", "Example Clinic")),
             ("other", at("900002", "Other")),
         ]);
-        let unread = || -> Option<Directory> { panic!("the directory is not read") };
         let named = header_name(&cfg, "clinic", "a-900002.E-1001", unread);
         assert_eq!(
             (named.name.as_str(), named.source),
@@ -282,10 +435,8 @@ mod tests {
     #[test]
     fn a_patient_id_in_another_shape_keeps_the_sign_ins_name() {
         let cfg = config(&[("wide", wide()), ("clinic", at("900001", "Example Clinic"))]);
-        let named = header_name(&cfg, "wide", "patient-1", || {
-            panic!("the directory is not read")
-        });
+        let named = header_name(&cfg, "wide", "patient-1", unread);
         assert_eq!(named.source, Source::SignIn);
-        assert_eq!(named.name, "athenahealth (every practice)");
+        assert_eq!(named.name, WIDE_NAME);
     }
 }

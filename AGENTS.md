@@ -23,6 +23,7 @@ from [cli-common](https://github.com/piekstra/cli-common).
 | `src/fhir.rs` | the read client: `pk_med_fhir::FhirClient` with athenahealth's `RetryPolicy`, the `Live` bearer source renewing through `pk_med_smart::Renewer`, and the circuit breaker |
 | `src/export.rs` | the export plan: searches, referenced reads, `Binary` after its parent, skips |
 | `src/stream.rs` | `pk-med-records`' `records-stream/v1` writer and DTOs, re-exported, and athena's header |
+| `src/practice.rs` | which practice a record is at: the export header's organization `name` and `location` for an athenahealth-wide sign-in, from a practice profile with the patient id's practice id, else the cached directory (`docs/api.md`, "Which practice a record is at") |
 | `src/documents.rs` | `documents/v1` over DocumentReference and DiagnosticReport, `Binary` fetch and file-type check |
 | `src/http.rs` | the request trait (revocation, the directory), origins |
 | `tests/support/mock.rs` | a mock athenahealth practice on 127.0.0.1 (also `make mock`) |
