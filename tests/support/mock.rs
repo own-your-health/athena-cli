@@ -27,7 +27,7 @@
 //! "error calling the PDP service" outcome, while every other request works),
 //! `withdrawn` (the RelatedPerson search revokes every token, as a sign-in
 //! withdrawn mid-export, and answers 401), `no-patient` (the token answer
-//! names no patient, as a sign-in that skipped athenahealth's record picker).
+//! has no `patient`, SMART's launch context parameter).
 //!
 //! In every mode, a MedicationRequest search without `intent` answers 403 with
 //! athenahealth's "required parameter combinations" outcome.

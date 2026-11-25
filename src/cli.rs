@@ -2372,11 +2372,11 @@ mod tests {
 
         // A relabel while the command ran stands, and a sign-out is not undone.
         let mut index = SessionIndex::load(&ctx.sessions_path().unwrap()).unwrap();
-        index.sessions[0].label = Some("adult1".into());
+        index.sessions[0].label = Some("renamed".into());
         index.save(&ctx.sessions_path().unwrap()).unwrap();
         note_renewal(&ctx, &entry, &before, &refused);
         let saved = SessionIndex::load(&ctx.sessions_path().unwrap()).unwrap();
-        assert_eq!(saved.sessions[0].label.as_deref(), Some("adult1"));
+        assert_eq!(saved.sessions[0].label.as_deref(), Some("renamed"));
         SessionIndex::default()
             .save(&ctx.sessions_path().unwrap())
             .unwrap();
@@ -2510,7 +2510,7 @@ mod tests {
         let ctx = test_ctx(dir.path());
         let keys = MemoryKeys::new();
         let mut index = SessionIndex::default();
-        index.upsert(old_entry("a-1.E-1", "newborn"));
+        index.upsert(old_entry("a-1.E-1", "first"));
         index.save(&ctx.sessions_path().unwrap()).unwrap();
         // The profile signed in again after the upgrade: an older copy in the
         // vault, and the v0.3 item, newer, with other tokens.
@@ -2531,7 +2531,7 @@ mod tests {
         .unwrap();
 
         let http = Revocations::default();
-        migrate_revoking(&ctx, &keys, "adult1", &["newborn"], &http).unwrap();
+        migrate_revoking(&ctx, &keys, "adult1", &["first"], &http).unwrap();
         // The newer copy is kept and the dropped one's access token revoked
         // (it has no refresh token).
         let store = ctx.sessions(&profile).unwrap();
@@ -2549,7 +2549,7 @@ mod tests {
         // Two copies of one grant (a renewal changed only the access token):
         // nothing is revoked, so the copy kept stays live.
         let mut index = ctx.index().unwrap();
-        index.upsert(old_entry("a-1.E-2", "adult1"));
+        index.upsert(old_entry("a-1.E-2", "second"));
         index.save(&ctx.sessions_path().unwrap()).unwrap();
         let mut renewed = session::test_session("wide", "a-1.E-2", revoke, 900);
         renewed.tokens.refresh_token = Some("refresh-shared".into());
@@ -2564,7 +2564,7 @@ mod tests {
         )
         .unwrap();
         let http = Revocations::default();
-        migrate_revoking(&ctx, &keys, "adult1", &["adult1"], &http).unwrap();
+        migrate_revoking(&ctx, &keys, "adult1", &["second"], &http).unwrap();
         assert!(http.0.lock().unwrap().is_empty());
         let kept = store
             .load(&session::key("wide", "a-1.E-2"))
@@ -2580,9 +2580,9 @@ mod tests {
         let keys = MemoryKeys::new();
         let mut index = SessionIndex::default();
         for (patient, label, sub) in [
-            ("a-1.E-1", "newborn", "login-a"),
-            ("a-1.E-2", "adult1", "login-a"),
-            ("a-1.E-3", "adult2", "login-b"),
+            ("a-1.E-1", "first", "login-a"),
+            ("a-1.E-2", "second", "login-a"),
+            ("a-1.E-3", "third", "login-b"),
         ] {
             index.upsert(old_entry(patient, label));
             old_item(&keys, patient, sub);
@@ -2590,7 +2590,7 @@ mod tests {
         index.upsert(old_entry("a-1.E-9", "gone"));
         index.save(&ctx.sessions_path().unwrap()).unwrap();
 
-        migrate(&ctx, &keys, "adult1", &["newborn", "a-1.E-2", "gone"]).unwrap();
+        migrate(&ctx, &keys, "adult1", &["first", "a-1.E-2", "gone"]).unwrap();
         let config = ctx.load().unwrap();
         assert!(config
             .profiles
@@ -2624,17 +2624,17 @@ mod tests {
         assert!(session::load(&*store, moved[0]).is_ok());
 
         // A second run finds them moved and changes nothing.
-        migrate(&ctx, &keys, "adult1", &["newborn", "adult1"]).unwrap();
+        migrate(&ctx, &keys, "adult1", &["first", "second"]).unwrap();
         assert_eq!(ctx.index().unwrap(), index);
 
         // Another login's sign-in into the same profile: moved, and counted.
-        migrate(&ctx, &keys, "adult1", &["adult2"]).unwrap();
+        migrate(&ctx, &keys, "adult1", &["third"]).unwrap();
         let index = ctx.index().unwrap();
         assert_eq!(
             distinct_logins(&index, &ProfileName::parse("adult1").unwrap()),
             2
         );
-        let entry = index.matching(Some("adult1"), Some("adult2"), None)[0].clone();
+        let entry = index.matching(Some("adult1"), Some("third"), None)[0].clone();
         assert_eq!(login_matches_profile(&index, &entry), Some(false));
     }
 
@@ -2645,19 +2645,19 @@ mod tests {
         let ctx = test_ctx(dir.path());
         let keys = MemoryKeys::new();
         let mut index = SessionIndex::default();
-        index.upsert(old_entry("a-1.E-1", "newborn"));
-        let mut taken = old_entry("a-1.E-5", "newborn");
+        index.upsert(old_entry("a-1.E-1", "first"));
+        let mut taken = old_entry("a-1.E-5", "first");
         taken.profile = Some("adult2".into());
         index.upsert(taken);
         index.save(&ctx.sessions_path().unwrap()).unwrap();
         old_item(&keys, "a-1.E-1", "login-b");
 
-        let err = migrate(&ctx, &keys, "adult2", &["newborn"]).unwrap_err();
+        let err = migrate(&ctx, &keys, "adult2", &["first"]).unwrap_err();
         assert_eq!(err.exit_code(), 2);
         assert!(err.remedy().unwrap().contains("auth relabel"), "{err}");
         let err = migrate(&ctx, &keys, "adult2", &["nobody"]).unwrap_err();
         assert_eq!(err.exit_code(), 4);
-        let err = migrate(&ctx, &keys, "Adult2", &["newborn"]).unwrap_err();
+        let err = migrate(&ctx, &keys, "Adult2", &["first"]).unwrap_err();
         assert_eq!(err.exit_code(), 2);
         // Nothing moved and no profile was added.
         assert!(keys
