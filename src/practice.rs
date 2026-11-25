@@ -6,9 +6,9 @@
 //! serves starts with the practice id (`a-<practiceid>.E-<chart>`), but
 //! Encounter's `serviceProvider` and `location` and the `ah-practice`
 //! extension are bare references, and each read of an Organization or
-//! Location answers 404 (`docs/api.md`). So the name comes from the
-//! household's own practice profile for that practice id, or from
-//! athenahealth's published directory when it lists one name for it.
+//! Location answers 404 (`docs/api.md`). So the name comes from a practice
+//! profile in the local config for that practice id, or from athenahealth's
+//! published directory when it lists one name for it.
 
 use std::collections::BTreeSet;
 

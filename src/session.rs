@@ -658,25 +658,23 @@ mod tests {
     #[test]
     fn relabel_renames_one_sign_in_and_keeps_labels_distinct_per_profile() {
         let mut index = SessionIndex::default();
-        index.upsert(entry("clinic", "a-1.E-1", Some("unconfirmed")));
+        index.upsert(entry("clinic", "a-1.E-1", Some("draft")));
         index.upsert(entry("clinic", "a-1.E-2", Some("kid")));
-        index.upsert(entry("other", "a-1.E-3", Some("adult1")));
+        index.upsert(entry("other", "a-1.E-3", Some("final")));
         index.upsert(in_profile("adult2", "clinic", "a-1.E-5", Some("kid")));
-        let renamed = index
-            .relabel("adult1", "clinic", "unconfirmed", "adult1")
-            .unwrap();
+        let renamed = index.relabel("adult1", "clinic", "draft", "final").unwrap();
         assert_eq!(renamed.patient, "a-1.E-1");
         assert_eq!(
             index
-                .matching(Some("adult1"), Some("adult1"), Some("clinic"))
+                .matching(Some("adult1"), Some("final"), Some("clinic"))
                 .len(),
             1
         );
         assert!(index
-            .matching(Some("adult1"), Some("unconfirmed"), None)
+            .matching(Some("adult1"), Some("draft"), None)
             .is_empty());
         let taken = index
-            .relabel("adult1", "clinic", "adult1", "kid")
+            .relabel("adult1", "clinic", "final", "kid")
             .unwrap_err();
         assert_eq!(taken.exit_code(), 2);
         assert!(index.relabel("adult1", "clinic", "kid", "kid").is_ok());
@@ -685,9 +683,9 @@ mod tests {
             .unwrap_err();
         assert_eq!(missing.exit_code(), 4);
         // Another profile's label is its own.
-        let elsewhere = index.relabel("adult2", "clinic", "unconfirmed", "x");
+        let elsewhere = index.relabel("adult2", "clinic", "draft", "x");
         assert_eq!(elsewhere.unwrap_err().exit_code(), 4);
-        assert!(index.relabel("adult2", "clinic", "kid", "newborn").is_ok());
+        assert!(index.relabel("adult2", "clinic", "kid", "renamed").is_ok());
     }
 
     #[test]
@@ -833,7 +831,7 @@ mod tests {
         assert_eq!(index.version, INDEX_VERSION);
         // Writing goes to the new file; v0.3.x's stays as it was.
         let mut index = index;
-        index.upsert(entry("clinic", "a-1.E-2", Some("adult1")));
+        index.upsert(entry("clinic", "a-1.E-2", Some("other")));
         index.save(&dir.path().join(INDEX_FILE)).unwrap();
         assert_eq!(std::fs::read_to_string(&v1).unwrap(), text);
         let again = SessionIndex::load_in(dir.path()).unwrap();

@@ -665,7 +665,7 @@ fn relabel_changes_only_the_index() {
             "profile": "adult1",
             "org": "clinic",
             "patient": "a-900001.E-1001",
-            "label": "unconfirmed",
+            "label": "draft",
             "environment": "production",
             "fhir_base": "https://api.platform.athenahealth.com/fhir/r4",
             "stored_at": "2026-01-01T00:00:00Z"
@@ -681,17 +681,17 @@ fn relabel_changes_only_the_index() {
             ],
         )
     };
-    let (code, json, _) = relabel("unconfirmed", "adult1");
+    let (code, json, _) = relabel("draft", "final");
     assert_eq!(code, 0, "{json}");
     assert_eq!(json["schema"], "auth-relabel/v1");
     assert_eq!(json["patient"], "a-900001.E-1001");
-    assert_eq!(json["to"], "adult1");
+    assert_eq!(json["to"], "final");
     let saved: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&index).unwrap()).unwrap();
-    assert_eq!(saved["sessions"][0]["label"], "adult1");
-    let (code, json, _) = relabel("unconfirmed", "adult2");
+    assert_eq!(saved["sessions"][0]["label"], "final");
+    let (code, json, _) = relabel("draft", "other");
     assert_eq!(code, 4, "{json}");
-    let (code, json, _) = relabel("adult1", "two words");
+    let (code, json, _) = relabel("final", "two words");
     assert_eq!(code, 2, "{json}");
     assert!(json["error"]["message"].as_str().unwrap().contains("--to"));
 }

@@ -150,8 +150,8 @@ complete export, and exits with its error's code. v0.1.0 wrote a new
 ## Profiles
 
 A profile is one person's athenahealth login: `adult1`, `adult2`. Its
-sign-ins, its labels and its browser window are its own, so one parent's
-commands never run as the other's. Name them for the person, never with a
+sign-ins, its labels and its browser window are its own, so one person's
+commands never run as another's. Name them for the person, never with a
 name from a record; they stay in the local config.
 
 Each profile signs in in its own Chrome profile, so one login's cookies never
